@@ -1164,6 +1164,34 @@ async function getDiasUnificados(todasLasObras) {
   return lista.sort((a, b) => b.fecha.localeCompare(a.fecha) || String(b.id).localeCompare(String(a.id)));
 }
 
+// Regla del domingo: si en una obra se trabajó de lunes a sábado de esa semana,
+// el domingo también cuenta (aunque no haya registro ese día).
+function armarSetsPorObra(contadas) {
+  const sets = {};
+  contadas.forEach((d) => { (sets[d.obraId] = sets[d.obraId] || new Set()).add(d.fecha); });
+  return sets;
+}
+
+function semanaLunesSabadoCompleta(set, domingoISO) {
+  for (let i = 1; i <= 6; i++) if (!set.has(addDiasISO(domingoISO, -i))) return false;
+  return true;
+}
+
+// Domingos del periodo que cuentan por la regla y que no tienen registro propio.
+function calcularDominicales(sets, inicio, fin) {
+  const lista = [];
+  for (let iso = inicio; iso <= fin; iso = addDiasISO(iso, 1)) {
+    if (new Date(iso + "T00:00:00").getDay() !== 0) continue;
+    Object.keys(sets).forEach((obraId) => {
+      if (!sets[obraId].has(iso) && semanaLunesSabadoCompleta(sets[obraId], iso)) lista.push({ obraId: Number(obraId), fecha: iso });
+    });
+  }
+  return lista;
+}
+
+let diasContadasTodasActuales = [];
+let diasDominicalesActuales = [];
+
 async function toggleDiaBitacora(ids, nuevoValor) {
   const todas = await getAllFromStore("bitacora");
   for (const id of ids) {
@@ -1182,6 +1210,9 @@ async function filtrarYRenderDias() {
   const filtradas = filtradasTodas.filter((d) => d.cuenta);
   const excluidos = filtradasTodas.length - filtradas.length;
   diasFiltradasActuales = filtradas;
+  diasContadasTodasActuales = todas.filter((d) => d.cuenta);
+  diasDominicalesActuales = calcularDominicales(armarSetsPorObra(diasContadasTodasActuales), diasInicio, diasFin);
+  const totalConDominicales = filtradas.length + diasDominicalesActuales.length;
 
   let obraNombreMap = {};
   if (modoTodas) {
@@ -1200,8 +1231,9 @@ async function filtrarYRenderDias() {
 
   document.getElementById("diasStats").innerHTML = `
     <div class="stat-row">
-      <div class="stat-box"><div class="num">${filtradas.length}</div><div class="label">DÍAS TRABAJADOS EN EL PERIODO</div></div>
+      <div class="stat-box"><div class="num">${totalConDominicales}</div><div class="label">DÍAS TRABAJADOS EN EL PERIODO</div></div>
     </div>
+    ${diasDominicalesActuales.length ? `<p class="backup-note" style="margin: -6px 0 14px;">Incluye ${filtradas.length} día${filtradas.length === 1 ? "" : "s"} registrado${filtradas.length === 1 ? "" : "s"} + ${diasDominicalesActuales.length} dominical${diasDominicalesActuales.length === 1 ? "" : "es"} (domingo que cuenta por haber trabajado de lunes a sábado).</p>` : ""}
     ${modoTodas && desgloseObras ? `<p class="backup-note" style="margin: -6px 0 14px;">${desgloseObras}</p>` : ""}
     ${excluidos ? `<p class="backup-note" style="margin: -6px 0 14px;">${excluidos} día${excluidos > 1 ? "s" : ""} de Bitácora marcado${excluidos > 1 ? "s" : ""} como "No cuenta" (no suma${excluidos > 1 ? "n" : ""} aquí ni en el Excel).</p>` : ""}`;
 
@@ -1343,9 +1375,9 @@ diaForm.addEventListener("submit", async (e) => {
   filtrarYRenderDias();
 });
 
-// ---------- Días trabajados: reporte en Excel ----------
+// ---------- Días trabajados: reporte en Excel (estilo calendario, igual al de Nómina) ----------
 document.getElementById("btnReporteExcel").addEventListener("click", async () => {
-  if (!diasFiltradasActuales.length) { showToast("No hay días en este periodo para exportar"); return; }
+  if (!diasFiltradasActuales.length && !diasDominicalesActuales.length) { showToast("No hay días en este periodo para exportar"); return; }
   if (typeof ExcelJS === "undefined") { showToast("No se pudo cargar el generador de Excel"); return; }
 
   const btn = document.getElementById("btnReporteExcel");
@@ -1356,74 +1388,201 @@ document.getElementById("btnReporteExcel").addEventListener("click", async () =>
   try {
     const modoTodas = diasScope === "todas";
     const obraNombre = document.getElementById("projectName").textContent;
-    let obraNombreMap = {};
-    if (modoTodas) {
-      const obras = await getAllObras();
-      obras.forEach((o) => { obraNombreMap[o.id] = o.nombre; });
+    const obras = await getAllObras();
+    const nombreDeObra = {};
+    obras.forEach((o) => { nombreDeObra[o.id] = o.nombre; });
+
+    const setsPorObra = armarSetsPorObra(diasContadasTodasActuales);
+    // Una fila por obra que tenga días en el periodo (en "Esta obra" es una sola).
+    const idsObras = [...new Set([...diasFiltradasActuales.map((d) => d.obraId), ...diasDominicalesActuales.map((d) => d.obraId)])]
+      .sort((a, b) => (nombreDeObra[a] || "").localeCompare(nombreDeObra[b] || ""));
+
+    function valorDia(obraId, iso) {
+      const set = setsPorObra[obraId] || new Set();
+      if (new Date(iso + "T00:00:00").getDay() === 0) return set.has(iso) || semanaLunesSabadoCompleta(set, iso);
+      return set.has(iso);
     }
 
-    const numCols = modoTodas ? 4 : 3;
-    const lastColLetter = modoTodas ? "D" : "C";
+    const bloques = dividirEnBloques(diasInicio, diasFin);
+    const COL_FIJAS = 2; // #, OBRA
+    const AZUL = "FF16324F", VERDE = "FF3D7A4D", NARANJA = "FFE07B39";
+    const borde = { top: { style: "thin", color: { argb: "FFDDDDDD" } }, left: { style: "thin", color: { argb: "FFDDDDDD" } }, bottom: { style: "thin", color: { argb: "FFDDDDDD" } }, right: { style: "thin", color: { argb: "FFDDDDDD" } } };
+    const relleno = (argb) => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
 
     const wb = new ExcelJS.Workbook();
     wb.creator = "Residente de Obra";
     wb.created = new Date();
-    const ws = wb.addWorksheet("Días trabajados");
-    ws.columns = modoTodas
-      ? [{ width: 16 }, { width: 18 }, { width: 22 }, { width: 24 }]
-      : [{ width: 16 }, { width: 18 }, { width: 26 }];
+    const ws = wb.addWorksheet("Calendario");
 
-    ws.mergeCells(`A1:${lastColLetter}1`);
-    ws.getCell("A1").value = "Reporte de días trabajados";
-    ws.getCell("A1").font = { bold: true, size: 14, color: { argb: "FFFFFFFF" } };
-    ws.getCell("A1").alignment = { horizontal: "center", vertical: "middle" };
-    ws.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF16324F" } };
-    ws.getRow(1).height = 26;
+    ws.getCell("A1").value = `Reporte de días trabajados — ${modoTodas ? "Todas las obras" : obraNombre}`;
+    ws.getCell("A1").font = { bold: true, size: 13, color: { argb: AZUL } };
+    ws.getCell("A2").value = `Periodo: ${formatFechaLarga(diasInicio)} — ${formatFechaLarga(diasFin)}`;
+    ws.getCell("A2").font = { size: 10, color: { argb: "FF5B6960" } };
+    let filaActual = 4;
+    const totalesGenerales = {};
+    let maxCols = 0;
 
-    ws.mergeCells(`A2:${lastColLetter}2`);
-    ws.getCell("A2").value = modoTodas ? "Obras incluidas: todas" : `Obra: ${obraNombre}`;
-    ws.getCell("A2").font = { bold: true, size: 11 };
-    ws.mergeCells(`A3:${lastColLetter}3`);
-    ws.getCell("A3").value = `Periodo: ${formatFechaLarga(diasInicio)} — ${formatFechaLarga(diasFin)}`;
-    ws.getCell("A3").font = { size: 10, color: { argb: "FF5B6960" } };
-    ws.mergeCells(`A4:${lastColLetter}4`);
-    ws.getCell("A4").value = `Generado: ${formatFechaLarga(new Date().toISOString().slice(0, 10))}`;
-    ws.getCell("A4").font = { size: 9, italic: true, color: { argb: "FF5B6960" } };
+    bloques.forEach((bloque, idxBloque) => {
+      const dias = [];
+      for (let d = bloque.inicio; d <= bloque.fin; d = addDiasISO(d, 1)) dias.push(d);
+      const numColsDias = dias.length;
+      const colTotalBloque = COL_FIJAS + numColsDias + 1;
+      const esUltimoBloque = idxBloque === bloques.length - 1;
+      const totalCols = esUltimoBloque ? colTotalBloque + 1 : colTotalBloque;
+      maxCols = Math.max(maxCols, totalCols);
 
-    ws.addRow([]);
-    const encabezados = modoTodas
-      ? ["Fecha", "Día de la semana", "Obra", "Tipo de actividad"]
-      : ["Fecha", "Día de la semana", "Tipo de actividad"];
-    const headerRow = ws.addRow(encabezados);
-    headerRow.eachCell((cell) => {
+      // Título del bloque (mes o rango de meses)
+      ws.mergeCells(filaActual, COL_FIJAS + 1, filaActual, COL_FIJAS + numColsDias);
+      const tituloCell = ws.getCell(filaActual, COL_FIJAS + 1);
+      tituloCell.value = tituloBloqueCalendario(bloque.inicio, bloque.fin);
+      tituloCell.font = { bold: true, size: 12 };
+      tituloCell.alignment = { horizontal: "center" };
+
+      // Letras de día de la semana
+      const filaLetras = filaActual + 1;
+      ws.getCell(filaLetras, 1).value = "#";
+      ws.getCell(filaLetras, 2).value = "OBRA";
+      ws.getCell(filaLetras, colTotalBloque).value = "TOTAL DÍAS";
+      if (esUltimoBloque) ws.getCell(filaLetras, colTotalBloque + 1).value = "TOTAL GENERAL";
+      for (let c = 1; c <= totalCols; c++) {
+        const cell = ws.getCell(filaLetras, c);
+        if (c <= COL_FIJAS || c > COL_FIJAS + numColsDias) {
+          cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+          cell.fill = relleno(AZUL);
+          cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        }
+      }
+      ws.getRow(filaLetras).height = 30;
+      dias.forEach((iso, i) => {
+        const dow = new Date(iso + "T00:00:00").getDay();
+        const cell = ws.getCell(filaLetras, COL_FIJAS + 1 + i);
+        cell.value = LETRA_DIA_SEMANA[dow];
+        cell.font = { bold: true, color: { argb: dow === 0 ? "FFFFFFFF" : AZUL } };
+        cell.alignment = { horizontal: "center" };
+        if (dow === 0) cell.fill = relleno(NARANJA);
+      });
+
+      // Números del día
+      const filaNums = filaActual + 2;
+      dias.forEach((iso, i) => {
+        const dow = new Date(iso + "T00:00:00").getDay();
+        const cell = ws.getCell(filaNums, COL_FIJAS + 1 + i);
+        cell.value = parseInt(iso.split("-")[2], 10);
+        cell.font = { bold: true, color: { argb: dow === 0 ? "FFFFFFFF" : "FF1C2620" } };
+        cell.alignment = { horizontal: "center" };
+        if (dow === 0) cell.fill = relleno(NARANJA);
+      });
+
+      // Una fila por obra
+      idsObras.forEach((obraId, idxO) => {
+        const fila = filaActual + 3 + idxO;
+        ws.getCell(fila, 1).value = idxO + 1;
+        ws.getCell(fila, 2).value = nombreDeObra[obraId] || "Obra eliminada";
+        let totalBloque = 0;
+        dias.forEach((iso, i) => {
+          const dow = new Date(iso + "T00:00:00").getDay();
+          const trabajo = valorDia(obraId, iso);
+          if (trabajo) totalBloque++;
+          const cell = ws.getCell(fila, COL_FIJAS + 1 + i);
+          if (dow === 0) {
+            cell.value = trabajo ? 1 : 0;
+            cell.fill = relleno("FFF4C9A8");
+            cell.font = { color: { argb: "FF8A4A1E" } };
+          } else if (trabajo) {
+            cell.value = 1;
+            cell.fill = relleno("FFBEE3EF");
+            cell.font = { bold: true, color: { argb: "FF0F5068" } };
+          }
+          cell.alignment = { horizontal: "center" };
+          cell.border = borde;
+        });
+        const totalCell = ws.getCell(fila, colTotalBloque);
+        totalCell.value = totalBloque;
+        totalCell.font = { bold: true };
+        totalCell.alignment = { horizontal: "center" };
+        totalesGenerales[obraId] = (totalesGenerales[obraId] || 0) + totalBloque;
+        if (esUltimoBloque) {
+          const tg = ws.getCell(fila, colTotalBloque + 1);
+          tg.value = totalesGenerales[obraId];
+          tg.font = { bold: true, color: { argb: VERDE } };
+          tg.alignment = { horizontal: "center" };
+        }
+        ws.getCell(fila, 2).border = borde;
+        ws.getCell(fila, 1).border = borde;
+        ws.getCell(fila, 1).alignment = { horizontal: "center" };
+      });
+
+      // Fila TOTAL cuando hay más de una obra
+      let filasUsadas = idsObras.length;
+      if (idsObras.length > 1) {
+        const filaT = filaActual + 3 + idsObras.length;
+        ws.getCell(filaT, 2).value = "TOTAL";
+        let suma = 0;
+        idsObras.forEach((obraId) => dias.forEach((iso) => { if (valorDia(obraId, iso)) suma++; }));
+        const tc = ws.getCell(filaT, colTotalBloque);
+        tc.value = suma;
+        if (esUltimoBloque) {
+          const tgc = ws.getCell(filaT, colTotalBloque + 1);
+          tgc.value = idsObras.reduce((a, id) => a + (totalesGenerales[id] || 0), 0);
+          tgc.font = { bold: true, color: { argb: VERDE } };
+          tgc.alignment = { horizontal: "center" };
+        }
+        for (let c = 1; c <= totalCols; c++) {
+          const cell = ws.getCell(filaT, c);
+          cell.border = { top: { style: "medium", color: { argb: AZUL } } };
+          if (c === 2 || c === colTotalBloque) cell.font = { bold: true };
+          if (c === colTotalBloque) cell.alignment = { horizontal: "center" };
+        }
+        filasUsadas++;
+      }
+      filaActual = filaActual + 3 + filasUsadas + 2;
+    });
+
+    ws.getCell(filaActual, 1).value = "Celeste = día trabajado (1). Los domingos (naranja) valen 1 cuando se trabajó de lunes a sábado de esa semana. Los días marcados \"No cuenta\" no se incluyen.";
+    ws.getCell(filaActual, 1).font = { italic: true, size: 9, color: { argb: "FF5B6960" } };
+    ws.getColumn(1).width = 4;
+    ws.getColumn(2).width = 26;
+    for (let c = COL_FIJAS + 1; c <= maxCols; c++) ws.getColumn(c).width = 6;
+    // Las columnas de totales son más anchas (están al final de cada bloque: 28 días, o menos en el último)
+    for (let c = COL_FIJAS + 1; c <= maxCols; c++) {
+      const v = ws.getCell(5, c).value;
+      if (typeof v === "string" && v.startsWith("TOTAL")) ws.getColumn(c).width = 12;
+    }
+    ws.getColumn(COL_FIJAS + 29).width = Math.max(ws.getColumn(COL_FIJAS + 29).width || 6, 12);
+    ws.getColumn(COL_FIJAS + 30).width = Math.max(ws.getColumn(COL_FIJAS + 30).width || 6, 14);
+
+    // ---- Hoja 2: detalle (fecha, día, obra, tipo) ----
+    const wd = wb.addWorksheet("Detalle");
+    wd.columns = [{ width: 16 }, { width: 18 }, { width: 26 }, { width: 24 }];
+    wd.mergeCells("A1:D1");
+    wd.getCell("A1").value = "Detalle de días trabajados";
+    wd.getCell("A1").font = { bold: true, size: 14, color: { argb: "FFFFFFFF" } };
+    wd.getCell("A1").alignment = { horizontal: "center", vertical: "middle" };
+    wd.getCell("A1").fill = relleno(AZUL);
+    wd.getRow(1).height = 26;
+    wd.addRow([]);
+    const enc = wd.addRow(["Fecha", "Día de la semana", "Obra", "Tipo de actividad"]);
+    enc.eachCell((cell) => {
       cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3D7A4D" } };
+      cell.fill = relleno(VERDE);
       cell.alignment = { horizontal: "center" };
       cell.border = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "thin" }, right: { style: "thin" } };
     });
-
-    const ordenadas = [...diasFiltradasActuales].sort((a, b) => a.fecha.localeCompare(b.fecha));
-    ordenadas.forEach((d) => {
-      const fila = modoTodas
-        ? [formatFechaLarga(d.fecha), capitalizar(nombreDiaSemana(d.fecha)), obraNombreMap[d.obraId] || "—", d.tipo || "—"]
-        : [formatFechaLarga(d.fecha), capitalizar(nombreDiaSemana(d.fecha)), d.tipo || "—"];
-      const row = ws.addRow(fila);
+    const filasDetalle = [
+      ...diasFiltradasActuales.map((d) => ({ fecha: d.fecha, obraId: d.obraId, tipo: d.tipo || "—" })),
+      ...diasDominicalesActuales.map((d) => ({ fecha: d.fecha, obraId: d.obraId, tipo: "Dominical (trabajó L–S)" })),
+    ].sort((a, b) => a.fecha.localeCompare(b.fecha) || (nombreDeObra[a.obraId] || "").localeCompare(nombreDeObra[b.obraId] || ""));
+    filasDetalle.forEach((f) => {
+      const row = wd.addRow([formatFechaLarga(f.fecha), capitalizar(nombreDiaSemana(f.fecha)), nombreDeObra[f.obraId] || "—", f.tipo]);
       row.eachCell((cell) => {
         cell.border = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "thin" }, right: { style: "thin" } };
         cell.alignment = { horizontal: "center" };
       });
     });
-
-    ws.addRow([]);
-    const totalRowNum = ws.rowCount + 1;
-    const totalFila = new Array(numCols).fill("");
-    totalFila[0] = "Total días trabajados";
-    totalFila[numCols - 1] = ordenadas.length;
-    const totalRow = ws.addRow(totalFila);
-    totalRow.font = { bold: true };
-    ws.mergeCells(`A${totalRowNum}:${String.fromCharCode(lastColLetter.charCodeAt(0) - 1)}${totalRowNum}`);
-
-    ws.views = [{ state: "frozen", ySplit: 6 }];
+    wd.addRow([]);
+    const totRow = wd.addRow(["Total días", "", "", filasDetalle.length]);
+    totRow.font = { bold: true };
+    wd.views = [{ state: "frozen", ySplit: 3 }];
 
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
