@@ -495,9 +495,14 @@ service cloud.firestore {
           <input type="time" id="f-horario-desde" aria-label="Hora de entrada">
           <span>a</span>
           <input type="time" id="f-horario-hasta" aria-label="Hora de salida">
-          <span class="duracion-txt" id="horarioTotal"></span>
         </div>
-        <p class="backup-note" style="margin-top:5px;">Se recuerda el último horario que usaste para que no tengas que escribirlo cada día. Déjalo vacío si ese día no se trabajó.</p>
+        <div class="horario-row" style="margin-top:8px;">
+          <label for="f-horario-descanso" style="margin:0;font-size:0.86rem;">Descanso (desayuno + almuerzo)</label>
+          <input type="number" id="f-horario-descanso" min="0" step="0.25" value="2" style="width:80px;padding:7px 8px;">
+          <span>h</span>
+        </div>
+        <p class="duracion-txt" id="horarioTotal" style="margin-top:8px;"></p>
+        <p class="backup-note" style="margin-top:5px;">Las horas de trabajo son la jornada menos el descanso (por ejemplo, de 7:00 a. m. a 5:00 p. m. con 2 h de descanso = 8 h). Se recuerda el último horario que usaste. Déjalo vacío si ese día no se trabajó.</p>
       </div>
 
       <div class="field">

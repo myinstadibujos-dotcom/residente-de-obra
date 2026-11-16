@@ -3943,6 +3943,7 @@ function openNewModal() {
   getSetting("horarioPorDefecto").then((hp) => {
     document.getElementById("f-horario-desde").value = (hp && hp.desde) || "";
     document.getElementById("f-horario-hasta").value = (hp && hp.hasta) || "";
+    document.getElementById("f-horario-descanso").value = ((hp && hp.descansoMin != null ? hp.descansoMin : DESCANSO_DEFECTO_MIN) / 60);
     actualizarHorarioTotal();
   });
   document.getElementById("f-cuenta-dia").checked = true;
@@ -3963,6 +3964,7 @@ async function openEditModal(id) {
   setClimaFields(entry.clima);
   document.getElementById("f-horario-desde").value = entry.horarioDesde || "";
   document.getElementById("f-horario-hasta").value = entry.horarioHasta || "";
+  document.getElementById("f-horario-descanso").value = (entry.horarioDescansoMin != null ? entry.horarioDescansoMin : DESCANSO_DEFECTO_MIN) / 60;
   actualizarHorarioTotal();
   document.getElementById("f-cuenta-dia").checked = entry.cuentaComoDia !== false;
   resetAiUndo();
@@ -4183,10 +4185,23 @@ function formatClima(clima, detallado) {
   }).join(detallado ? "<br>" : ", ");
 }
 
+const DESCANSO_DEFECTO_MIN = 120; // desayuno + almuerzo
+
+function minutosTrabajados(desde, hasta, descansoMin) {
+  const bruto = minutosEntre(desde, hasta);
+  if (bruto === null) return null;
+  const neto = bruto - (descansoMin || 0);
+  return neto > 0 ? neto : null;
+}
+
 function formatHorarioEntry(entry) {
   if (!entry.horarioDesde || !entry.horarioHasta) return null;
-  const min = minutosEntre(entry.horarioDesde, entry.horarioHasta);
-  return `${formatHora12(entry.horarioDesde)} a ${formatHora12(entry.horarioHasta)}${min !== null ? " (" + formatDuracionMin(min) + ")" : ""}`;
+  // Registros guardados antes de existir el campo de descanso usan el descanso normal (2 h).
+  const descanso = entry.horarioDescansoMin != null ? entry.horarioDescansoMin : DESCANSO_DEFECTO_MIN;
+  const neto = minutosTrabajados(entry.horarioDesde, entry.horarioHasta, descanso);
+  const rango = `${formatHora12(entry.horarioDesde)} a ${formatHora12(entry.horarioHasta)}`;
+  if (neto === null) return rango;
+  return `${rango} (${formatDuracionMin(neto)} de trabajo${descanso ? ", descontando " + formatDuracionMin(descanso) + " de descanso" : ""})`;
 }
 
 document.querySelectorAll(".clima-toggle").forEach((chk) => {
@@ -4206,9 +4221,27 @@ document.querySelectorAll(".clima-desde, .clima-hasta").forEach((inp) => {
 });
 
 // ---------- Horario de trabajo (jornada del día) ----------
-function actualizarHorarioTotal() {
-  pintarDuracion(document.getElementById("horarioTotal"), document.getElementById("f-horario-desde").value, document.getElementById("f-horario-hasta").value, null);
+function descansoMinDelForm() {
+  const v = parseFloat(document.getElementById("f-horario-descanso").value);
+  return isNaN(v) || v < 0 ? 0 : Math.round(v * 60);
 }
+
+function actualizarHorarioTotal() {
+  const el = document.getElementById("horarioTotal");
+  const desde = document.getElementById("f-horario-desde").value;
+  const hasta = document.getElementById("f-horario-hasta").value;
+  el.classList.remove("error");
+  if (!desde || !hasta) { el.textContent = ""; return; }
+  const bruto = minutosEntre(desde, hasta);
+  if (bruto === null) { el.textContent = "⚠ La hora de salida debe ser después de la entrada"; el.classList.add("error"); return; }
+  const desc = descansoMinDelForm();
+  const neto = minutosTrabajados(desde, hasta, desc);
+  if (neto === null) { el.textContent = "⚠ El descanso es mayor o igual que la jornada"; el.classList.add("error"); return; }
+  el.textContent = desc
+    ? `Jornada ${formatDuracionMin(bruto)} − descanso ${formatDuracionMin(desc)} = ${formatDuracionMin(neto)} de trabajo`
+    : `= ${formatDuracionMin(neto)} de trabajo`;
+}
+document.getElementById("f-horario-descanso").addEventListener("input", actualizarHorarioTotal);
 document.getElementById("f-horario-desde").addEventListener("input", actualizarHorarioTotal);
 document.getElementById("f-horario-hasta").addEventListener("input", actualizarHorarioTotal);
 
@@ -4268,6 +4301,10 @@ form.addEventListener("submit", async (e) => {
   if ((hDesde && !hHasta) || (!hDesde && hHasta) || (hDesde && hHasta && minutosEntre(hDesde, hHasta) === null)) {
     alert("Revisa el horario de trabajo: pon hora de entrada y de salida, y que la salida sea después de la entrada."); return;
   }
+  const hDescanso = descansoMinDelForm();
+  if (hDesde && hHasta && minutosTrabajados(hDesde, hHasta, hDescanso) === null) {
+    alert("El descanso es mayor o igual que la jornada. Revisa las horas o el descanso."); return;
+  }
 
   const fechaSeleccionada = document.getElementById("f-fecha").value;
   const resumenFinal = await computePersonalResumen(fechaSeleccionada);
@@ -4280,7 +4317,8 @@ form.addEventListener("submit", async (e) => {
     personalTotal: resumenFinal.total,
     horarioDesde: hDesde,
     horarioHasta: hHasta,
-    horarioHoras: hDesde && hHasta ? Math.round((minutosEntre(hDesde, hHasta) / 60) * 100) / 100 : null,
+    horarioDescansoMin: hDesde && hHasta ? hDescanso : null,
+    horarioHoras: hDesde && hHasta ? Math.round((minutosTrabajados(hDesde, hHasta, hDescanso) / 60) * 100) / 100 : null, // horas netas (sin descanso)
     cuentaComoDia: document.getElementById("f-cuenta-dia").checked,
     clima: getClimaFromForm(),
     actividades: document.getElementById("f-actividades").value.trim(),
@@ -4292,7 +4330,7 @@ form.addEventListener("submit", async (e) => {
   if (editingId) entry.id = editingId;
 
   await saveEntry(entry);
-  if (hDesde && hHasta) await setSetting("horarioPorDefecto", { desde: hDesde, hasta: hHasta });
+  if (hDesde && hHasta) await setSetting("horarioPorDefecto", { desde: hDesde, hasta: hHasta, descansoMin: hDescanso });
   closeModal();
   showToast("Registro guardado");
   renderEntryList();
