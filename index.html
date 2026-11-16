@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Residente de Obra</title>
+<meta name="theme-color" content="#16324F">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="app-header" id="appHeader">
+  <div class="app-header-row">
+    <div>
+      <p class="project-name" id="projectName">Cargando…</p>
+      <p class="project-sub" id="projectSub">CONTROL DE OBRA — RESIDENTE</p>
+    </div>
+    <span class="app-header-caret">▾</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- ---------- INICIO ---------- -->
+  <section class="screen active" id="screen-inicio">
+    <div id="inicioBackupBanner"></div>
+    <div id="inicioTareasBanner"></div>
+    <h2 class="section-title">Resumen</h2>
+    <div class="stat-row">
+      <div class="stat-box">
+        <div class="num" id="statMonthCount">0</div>
+        <div class="label">REGISTROS ESTE MES</div>
+      </div>
+      <div class="stat-box">
+        <div class="num" id="statLastDate">—</div>
+        <div class="label">ÚLTIMA BITÁCORA</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="entry-block">
+        <div class="k">Copia de seguridad</div>
+        <div class="v backup-note">Todos tus datos se guardan solo en este teléfono. <b>Desinstalar la app también borra los datos</b> — exporta siempre una copia antes de desinstalar o cambiar de equipo.</div>
+      </div>
+      <div class="entry-block">
+        <div class="k">Protección contra borrado automático</div>
+        <p class="backup-note" id="storagePersistStatus">Verificando…</p>
+      </div>
+      <div class="entry-actions">
+        <button class="btn btn-secondary" id="btnExport">⬇ Exportar copia</button>
+        <button class="btn btn-secondary" id="btnImport">⬆ Restaurar copia</button>
+      </div>
+      <input type="file" id="importFile" accept="application/json" style="display:none">
+    </div>
+
+    <details class="manage-section">
+      <summary>✨ Mejora de redacción con IA (opcional)</summary>
+      <div style="margin-top:12px;">
+        <p class="backup-note">Sin nada configurado, el botón "Mejorar" en la Bitácora solo hace una limpieza básica del texto (ortografía y orden). Si quieres que además redacte mejor de verdad, puedes conectar una clave gratuita de Google Gemini — no tiene costo ni pide tarjeta.</p>
+        <p class="backup-note" style="margin-top:8px;"><b>Cómo obtenerla:</b> entra a aistudio.google.com desde tu celular o computador, inicia sesión con tu cuenta de Google, busca "Get API key" y cópiala aquí abajo.</p>
+        <div class="field" style="margin-top:12px;">
+          <label for="geminiKeyInput">Clave de API de Gemini</label>
+          <input type="text" id="geminiKeyInput" placeholder="Pega tu clave aquí">
+        </div>
+        <div class="entry-actions">
+          <button type="button" class="btn btn-primary" id="btnGuardarGeminiKey">Guardar clave</button>
+          <button type="button" class="btn btn-danger" id="btnBorrarGeminiKey">Quitar</button>
+        </div>
+        <p class="backup-note" id="geminiKeyStatus" style="margin-top:10px;"></p>
+      </div>
+    </details>
+
+    <div class="card" style="margin-top:16px;">
+      <div class="entry-block">
+        <div class="k">🔔 Notificaciones de pendientes</div>
+        <p class="backup-note" id="notifStatus" style="margin-top:4px;">—</p>
+      </div>
+      <button type="button" class="btn btn-primary btn-block" id="btnActivarNotif">Activar notificaciones</button>
+      <p class="backup-note" style="margin-top:8px;">Importante: para que funcione, tu navegador tiene que estar abierto (aunque sea de fondo) al menos una vez ese día — no llegan si el teléfono está completamente apagado o sin abrir la app.</p>
+    </div>
+
+    <h2 class="section-title" id="roadmapTitle" style="margin-top:22px;">Próximos módulos</h2>
+    <div id="roadmapList"></div>
+  </section>
+
+  <!-- ---------- BITÁCORA ---------- -->
+  <section class="screen" id="screen-bitacora">
+    <h2 class="section-title">Bitácora de obra</h2>
+    <div id="entryList"></div>
+  </section>
+
+  <!-- ---------- INVENTARIO ---------- -->
+  <section class="screen" id="screen-inventario">
+    <h2 class="section-title">Inventario de materiales</h2>
+    <div id="lowStockBanner"></div>
+    <div id="itemList"></div>
+
+    <details class="manage-section">
+      <summary>Gestionar categorías</summary>
+      <div style="margin-top:12px;">
+        <div id="categoriaInvManageList"></div>
+        <div class="field" style="margin-top:12px;">
+          <label for="categoriaInv-nombre">Nueva categoría</label>
+          <input type="text" id="categoriaInv-nombre" placeholder="Ej: Equipo de seguridad">
+        </div>
+        <button type="button" class="btn btn-primary btn-block" id="btnAgregarCategoriaInv">+ Agregar categoría</button>
+      </div>
+    </details>
+
+    <details class="manage-section">
+      <summary>Gestionar unidades</summary>
+      <div style="margin-top:12px;">
+        <div id="unidadInvManageList"></div>
+        <div class="field" style="margin-top:12px;">
+          <label for="unidadInv-nombre">Nueva unidad</label>
+          <input type="text" id="unidadInv-nombre" placeholder="Ej: Canecas">
+        </div>
+        <button type="button" class="btn btn-primary btn-block" id="btnAgregarUnidadInv">+ Agregar unidad</button>
+      </div>
+    </details>
+  </section>
+
+  <!-- ---------- ASISTENCIA ---------- -->
+  <section class="screen" id="screen-asistencia">
+    <h2 class="section-title">Asistencia de personal</h2>
+
+    <div class="date-nav">
+      <button type="button" id="asistenciaPrev" class="date-nav-btn">‹</button>
+      <div class="date-nav-mid">
+        <div class="date-nav-label" id="asistenciaFechaLabel">—</div>
+        <input type="date" id="asistenciaFechaInput">
+      </div>
+      <button type="button" id="asistenciaNext" class="date-nav-btn">›</button>
+    </div>
+
+    <div id="asistenciaStats"></div>
+    <div id="workerAttendanceList"></div>
+
+    <details class="manage-section">
+      <summary>Gestionar personal</summary>
+      <div id="workerManageList" style="margin-top:12px;"></div>
+    </details>
+
+    <details class="manage-section">
+      <summary>Gestionar cargos</summary>
+      <div style="margin-top:12px;">
+        <div id="cargoManageList"></div>
+        <div class="field-row" style="margin-top:12px;">
+          <div class="field">
+            <label for="cargo-nombre">Nombre (singular)</label>
+            <input type="text" id="cargo-nombre" placeholder="Ej: Soldador">
+          </div>
+          <div class="field">
+            <label for="cargo-plural">Plural (opcional)</label>
+            <input type="text" id="cargo-plural" placeholder="Ej: Soldadores">
+          </div>
+        </div>
+        <div class="field">
+          <label>Tipo de personal</label>
+          <div class="chip-select" id="cargoCategoriaChips">
+            <div class="chip selected sel-incapacidad" data-value="profesional">Profesional / Técnico</div>
+            <div class="chip" data-value="mano_obra">Mano de obra</div>
+          </div>
+        </div>
+        <button type="button" class="btn btn-primary btn-block" id="btnAgregarCargo">+ Agregar cargo</button>
+      </div>
+    </details>
+  </section>
+
+  <!-- ---------- NÓMINA ---------- -->
+  <section class="screen" id="screen-nomina">
+    <h2 class="section-title">Nómina</h2>
+
+    <div class="card">
+      <div class="field-row">
+        <div class="field">
+          <label for="nominaInicioInput">Desde</label>
+          <input type="date" id="nominaInicioInput">
+        </div>
+        <div class="field">
+          <label for="nominaFinInput">Hasta</label>
+          <input type="date" id="nominaFinInput">
+        </div>
+      </div>
+    </div>
+
+    <div id="nominaResumen"></div>
+    <div id="nominaList"></div>
+
+    <div class="entry-actions" style="margin: 4px 0 10px;">
+      <button class="btn btn-primary" id="btnRegistrarPago">✓ Registrar pago</button>
+      <button class="btn btn-secondary" id="btnImprimirNomina">Imprimir</button>
+    </div>
+    <button type="button" class="btn btn-primary btn-block" id="btnReporteCalendarioExcel" style="margin-bottom:22px;">📅 Reporte calendario de asistencia (Excel)</button>
+
+    <details class="manage-section">
+      <summary>Historial de pagos registrados</summary>
+      <div id="pagosHistorialList" style="margin-top:12px;"></div>
+    </details>
+  </section>
+
+  <!-- ---------- MAQUINARIA ---------- -->
+  <section class="screen" id="screen-maquinaria">
+    <h2 class="section-title">Control de maquinaria</h2>
+    <div id="maquinariaStats"></div>
+
+    <div class="card">
+      <div class="tool-subtitle" style="margin-bottom:12px;">Reporte de horas por periodo</div>
+      <div class="field-row">
+        <div class="field">
+          <label for="maqReporteInicio">Desde</label>
+          <input type="date" id="maqReporteInicio">
+        </div>
+        <div class="field">
+          <label for="maqReporteFin">Hasta</label>
+          <input type="date" id="maqReporteFin">
+        </div>
+      </div>
+      <button type="button" class="btn btn-primary btn-block" id="btnReporteMaquinariaExcel">📊 Generar reporte Excel del periodo</button>
+    </div>
+
+    <div id="equipoList"></div>
+  </section>
+
+  <!-- ---------- CAJA MENOR ---------- -->
+  <section class="screen" id="screen-caja">
+    <h2 class="section-title">Caja menor</h2>
+    <div id="cajaSaldoCard"></div>
+    <div id="cajaList"></div>
+  </section>
+
+  <!-- ---------- PEDIDOS ---------- -->
+  <section class="screen" id="screen-pedidos">
+    <h2 class="section-title">Pedidos de material</h2>
+    <div id="pedidosStats"></div>
+    <div id="pedidosList"></div>
+  </section>
+
+  <!-- ---------- DÍAS TRABAJADOS ---------- -->
+  <section class="screen" id="screen-dias">
+    <h2 class="section-title">Días trabajados</h2>
+
+    <div class="card">
+      <label style="display:block; font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;">Alcance</label>
+      <div class="chip-select" id="diasScopeChips" style="margin-bottom:14px;">
+        <div class="chip selected sel-presente" data-value="actual">Esta obra</div>
+        <div class="chip" data-value="todas">Todas las obras</div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="diasInicioInput">Desde</label>
+          <input type="date" id="diasInicioInput">
+        </div>
+        <div class="field">
+          <label for="diasFinInput">Hasta</label>
+          <input type="date" id="diasFinInput">
+        </div>
+      </div>
+    </div>
+
+    <div id="diasStats"></div>
+    <div id="diasList"></div>
+
+    <button type="button" class="btn btn-primary btn-block" id="btnReporteExcel" style="margin: 6px 0 24px;">📊 Generar reporte Excel del periodo</button>
+    <p class="backup-note" style="margin-top:-14px; margin-bottom:22px;">El Excel incluye fecha, día de la semana y tipo de actividad. La descripción de lo que hiciste ese día queda solo en la app, no se exporta.</p>
+  </section>
+
+  <!-- ---------- TAREAS / PENDIENTES ---------- -->
+  <section class="screen" id="screen-tareas">
+    <h2 class="section-title">Pendientes</h2>
+
+    <div class="card">
+      <label style="display:block; font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;">Alcance</label>
+      <div class="chip-select" id="tareasScopeChips" style="margin-bottom:14px;">
+        <div class="chip selected sel-presente" data-value="actual">Esta obra</div>
+        <div class="chip" data-value="todas">Todas las obras</div>
+      </div>
+      <label style="display:block; font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;">Mostrar</label>
+      <div class="chip-select" id="tareasFiltroChips">
+        <div class="chip" data-value="todas">Todas</div>
+        <div class="chip selected sel-incapacidad" data-value="pendientes">Pendientes</div>
+        <div class="chip" data-value="completadas">Completadas</div>
+      </div>
+    </div>
+
+    <div id="tareasStats"></div>
+    <div id="tareasList"></div>
+  </section>
+
+  <!-- ---------- HERRAMIENTAS ---------- -->
+  <section class="screen" id="screen-herramientas">
+    <h2 class="section-title">Herramientas</h2>
+
+    <div class="card">
+      <div class="tool-subtitle">Conversor de unidades</div>
+      <div class="chip-select" id="convCategorias" style="margin-bottom:14px;"></div>
+      <div class="field-row">
+        <div class="field">
+          <label for="convValor">Valor</label>
+          <input type="number" id="convValor" value="1" step="any">
+        </div>
+        <div class="field">
+          <label for="convFrom">De</label>
+          <select id="convFrom"></select>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:center; margin: -6px 0 6px;">
+        <button type="button" class="swap-btn" id="convSwap" title="Invertir">⇄</button>
+      </div>
+      <div class="field">
+        <label for="convTo">A</label>
+        <select id="convTo"></select>
+      </div>
+      <div class="conv-result-box">
+        <div class="conv-result-label">RESULTADO</div>
+        <div class="conv-result" id="convResultado">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="tool-subtitle">Diámetros de acero de refuerzo</div>
+      <div style="overflow-x:auto;">
+        <table class="steel-table">
+          <thead>
+            <tr><th>Núm.</th><th>Pulgadas</th><th>mm</th><th>Área cm²</th><th>Peso kg/m</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>#2</td><td>1/4"</td><td>6.4</td><td>0.32</td><td>0.248</td></tr>
+            <tr><td>#3</td><td>3/8"</td><td>9.5</td><td>0.71</td><td>0.560</td></tr>
+            <tr><td>#4</td><td>1/2"</td><td>12.7</td><td>1.29</td><td>0.994</td></tr>
+            <tr><td>#5</td><td>5/8"</td><td>15.9</td><td>2.00</td><td>1.552</td></tr>
+            <tr><td>#6</td><td>3/4"</td><td>19.1</td><td>2.84</td><td>2.235</td></tr>
+            <tr><td>#7</td><td>7/8"</td><td>22.2</td><td>3.87</td><td>3.042</td></tr>
+            <tr><td>#8</td><td>1"</td><td>25.4</td><td>5.10</td><td>3.973</td></tr>
+            <tr><td>#9</td><td>1 1/8"</td><td>28.7</td><td>6.45</td><td>5.060</td></tr>
+            <tr><td>#10</td><td>1 1/4"</td><td>32.3</td><td>8.19</td><td>6.404</td></tr>
+            <tr><td>#11</td><td>1 3/8"</td><td>35.8</td><td>10.06</td><td>7.907</td></tr>
+            <tr><td>#14</td><td>1 3/4"</td><td>43.0</td><td>14.52</td><td>11.38</td></tr>
+            <tr><td>#18</td><td>2 1/4"</td><td>57.3</td><td>25.81</td><td>20.24</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="backup-note" style="margin-top:10px;">Valores nominales según ASTM A615 / NTC 2289. Verifica siempre con el certificado de calidad del proveedor para cálculos estructurales críticos.</p>
+    </div>
+
+    <div class="card">
+      <div class="tool-subtitle">Dosificación de concreto (por m³)</div>
+      <div style="overflow-x:auto;">
+        <table class="steel-table">
+          <thead>
+            <tr><th>Proporción</th><th>f'c (psi)</th><th>Cemento</th><th>Arena (m³)</th><th>Grava (m³)</th><th>Agua (L)</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1:3:5</td><td>1500</td><td>4.2 bultos<br>(210 kg)</td><td>0.50</td><td>1.00</td><td>160</td></tr>
+            <tr><td>1:3:4</td><td>2000</td><td>5.2 bultos<br>(260 kg)</td><td>0.63</td><td>0.84</td><td>170</td></tr>
+            <tr><td>1:2:4</td><td>2500</td><td>6.0 bultos<br>(300 kg)</td><td>0.48</td><td>0.95</td><td>170</td></tr>
+            <tr><td>1:2:3</td><td>3000</td><td>7.0 bultos<br>(350 kg)</td><td>0.56</td><td>0.84</td><td>180</td></tr>
+            <tr><td>1:2:2</td><td>3500</td><td>8.4 bultos<br>(420 kg)</td><td>0.67</td><td>0.67</td><td>220</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="backup-note" style="margin-top:10px;">Proporción en volumen (cemento:arena:grava). Bultos de cemento de 50 kg. Son valores de referencia general — varían según el tipo de agregado, su humedad y granulometría. Para elementos estructurales, usa el diseño de mezcla específico del proveedor de concreto.</p>
+    </div>
+  </section>
+
+</main>
+
+<button class="btn-fab" id="btnNewEntry" title="Nuevo registro">+</button>
+<button class="btn-fab" id="btnNewItem" title="Nuevo material" style="display:none;">+</button>
+<button class="btn-fab" id="btnNewWorker" title="Nuevo trabajador" style="display:none;">+</button>
+<button class="btn-fab" id="btnNewEquipo" title="Nuevo equipo" style="display:none;">+</button>
+<button class="btn-fab" id="btnNewCaja" title="Nuevo movimiento" style="display:none;">+</button>
+<button class="btn-fab" id="btnNewPedido" title="Nuevo pedido" style="display:none;">+</button>
+<button class="btn-fab" id="btnNewDia" title="Nuevo día trabajado" style="display:none;">+</button>
+<button class="btn-fab" id="btnNewTarea" title="Nueva tarea" style="display:none;">+</button>
+
+<nav class="bottom-nav">
+  <button class="nav-item active" data-screen="inicio">
+    <span class="ico">⌂</span><span class="lbl">Inicio</span>
+  </button>
+  <button class="nav-item" data-screen="bitacora">
+    <span class="ico">📋</span><span class="lbl">Bitácora</span>
+  </button>
+  <button class="nav-item" data-screen="inventario">
+    <span class="ico">🧱</span><span class="lbl">Inventario</span>
+  </button>
+  <button class="nav-item" data-screen="asistencia">
+    <span class="ico">👷</span><span class="lbl">Asistencia</span>
+  </button>
+  <button class="nav-item" data-screen="nomina">
+    <span class="ico">💵</span><span class="lbl">Nómina</span>
+  </button>
+  <button class="nav-item" data-screen="maquinaria">
+    <span class="ico">🚜</span><span class="lbl">Maquinaria</span>
+  </button>
+  <button class="nav-item" data-screen="caja">
+    <span class="ico">🧾</span><span class="lbl">Caja</span>
+  </button>
+  <button class="nav-item" data-screen="pedidos">
+    <span class="ico">📦</span><span class="lbl">Pedidos</span>
+  </button>
+  <button class="nav-item" data-screen="dias">
+    <span class="ico">📅</span><span class="lbl">Días</span>
+  </button>
+  <button class="nav-item" data-screen="tareas">
+    <span class="ico">✅</span><span class="lbl">Pendientes</span>
+  </button>
+  <button class="nav-item" data-screen="herramientas">
+    <span class="ico">🛠</span><span class="lbl">Herramientas</span>
+  </button>
+</nav>
+
+<!-- ---------- MODAL: nuevo / editar registro ---------- -->
+<div class="modal-backdrop" id="entryModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="modalTitle">Nuevo registro</h3>
+      <button class="modal-close" id="closeModal">✕</button>
+    </div>
+
+    <form id="entryForm">
+      <div class="field">
+        <label for="f-fecha">Fecha</label>
+        <input type="date" id="f-fecha" required>
+        <p class="backup-note" id="fechaCompletaPreview" style="margin-top:5px;"></p>
+      </div>
+
+      <div class="field">
+        <label>Personal en obra (automático desde Asistencia)</label>
+        <div class="personal-resumen-box" id="personalResumenBox">—</div>
+      </div>
+
+      <div class="field">
+        <label>Clima (puedes elegir varios y cuánto duró cada uno)</label>
+        <div class="clima-list" id="climaList">
+          <div class="clima-row" data-value="Soleado">
+            <label class="clima-check"><input type="checkbox" class="clima-toggle">☀ Soleado</label>
+            <input type="number" class="clima-horas" min="0" step="any" placeholder="Horas" style="display:none;">
+          </div>
+          <div class="clima-row" data-value="Nublado">
+            <label class="clima-check"><input type="checkbox" class="clima-toggle">☁ Nublado</label>
+            <input type="number" class="clima-horas" min="0" step="any" placeholder="Horas" style="display:none;">
+          </div>
+          <div class="clima-row" data-value="Lluvia">
+            <label class="clima-check"><input type="checkbox" class="clima-toggle">🌧 Lluvia</label>
+            <input type="number" class="clima-horas" min="0" step="any" placeholder="Horas" style="display:none;">
+          </div>
+          <div class="clima-row" data-value="Lluvia parcial">
+            <label class="clima-check"><input type="checkbox" class="clima-toggle">🌦 Lluvia parcial</label>
+            <input type="number" class="clima-horas" min="0" step="any" placeholder="Horas" style="display:none;">
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label-row">
+          <label for="f-actividades" style="margin:0;">Actividades realizadas</label>
+          <button type="button" class="ai-btn" id="aiBtnActividades">✨ Mejorar</button>
+        </div>
+        <textarea id="f-actividades" placeholder="Describe las actividades del día..."></textarea>
+        <button type="button" class="ai-undo-link" id="aiUndoActividades" style="display:none;">↺ Deshacer redacción</button>
+      </div>
+
+      <div class="field">
+        <label>Maquinaria y equipos en obra (automático desde Maquinaria)</label>
+        <div class="personal-resumen-box" id="maquinariaResumenBox">—</div>
+      </div>
+
+      <div class="field">
+        <label for="f-materiales">Materiales recibidos</label>
+        <textarea id="f-materiales" placeholder="Ej: 20 m³ de grava, 15 bultos de cemento..."></textarea>
+      </div>
+
+      <div class="field">
+        <div class="field-label-row">
+          <label for="f-incidentes" style="margin:0;">Incidentes / observaciones</label>
+          <button type="button" class="ai-btn" id="aiBtnIncidentes">✨ Mejorar</button>
+        </div>
+        <textarea id="f-incidentes" placeholder="Novedades, atrasos, seguridad, visitas..."></textarea>
+        <button type="button" class="ai-undo-link" id="aiUndoIncidentes" style="display:none;">↺ Deshacer redacción</button>
+      </div>
+
+      <div class="field">
+        <label>Fotos</label>
+        <div class="photo-grid" id="photoGrid">
+          <div class="add-photo-btn" id="takePhotoBtn" title="Tomar foto">📷</div>
+          <div class="add-photo-btn" id="galleryPhotoBtn" title="Elegir de galería">🖼</div>
+        </div>
+        <input type="file" id="photoCamera" accept="image/*" capture="environment" style="display:none">
+        <input type="file" id="photoGallery" accept="image/*" multiple style="display:none">
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Guardar registro</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: nuevo / editar material ---------- -->
+<div class="modal-backdrop" id="itemModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="itemModalTitle">Nuevo material</h3>
+      <button class="modal-close" id="closeItemModal">✕</button>
+    </div>
+
+    <form id="itemForm">
+      <div class="field">
+        <label for="i-nombre">Nombre del material</label>
+        <input type="text" id="i-nombre" placeholder="Ej: Cemento gris" required>
+      </div>
+
+      <div class="field">
+        <label for="i-categoria">Categoría</label>
+        <select id="i-categoria" required></select>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="i-unidad">Unidad</label>
+          <select id="i-unidad" required></select>
+        </div>
+        <div class="field">
+          <label for="i-stock">Stock actual</label>
+          <input type="number" id="i-stock" min="0" step="any" placeholder="0" required>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="i-minimo">Stock mínimo (alerta)</label>
+        <input type="number" id="i-minimo" min="0" step="any" placeholder="Opcional">
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Guardar material</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: registrar movimiento (entrada/salida) ---------- -->
+<div class="modal-backdrop" id="movModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="movModalTitle">Registrar movimiento</h3>
+      <button class="modal-close" id="closeMovModal">✕</button>
+    </div>
+
+    <form id="movForm">
+      <div class="field">
+        <label>Tipo de movimiento</label>
+        <div class="chip-select" id="movTipoChips">
+          <div class="chip selected" data-value="entrada">⬇ Entrada</div>
+          <div class="chip" data-value="salida">⬆ Salida</div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="m-cantidad">Cantidad</label>
+          <input type="number" id="m-cantidad" min="0" step="any" required>
+        </div>
+        <div class="field">
+          <label for="m-fecha">Fecha</label>
+          <input type="date" id="m-fecha" required>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="m-nota">Nota</label>
+        <input type="text" id="m-nota" placeholder="Ej: Entregado por proveedor X / Usado en cimentación">
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Guardar movimiento</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: nuevo / editar trabajador ---------- -->
+<div class="modal-backdrop" id="workerModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="workerModalTitle">Nuevo trabajador</h3>
+      <button class="modal-close" id="closeWorkerModal">✕</button>
+    </div>
+
+    <form id="workerForm">
+      <div class="field">
+        <label for="w-nombre">Nombre completo</label>
+        <input type="text" id="w-nombre" placeholder="Ej: Carlos Pérez" required>
+      </div>
+      <div class="field">
+        <label for="w-cargo">Cargo</label>
+        <select id="w-cargo" required></select>
+      </div>
+      <div class="field">
+        <label for="w-telefono">Teléfono</label>
+        <input type="tel" id="w-telefono" placeholder="Ej: 300 123 4567">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="w-valorDia">Valor por día</label>
+          <input type="number" id="w-valorDia" min="0" step="any" placeholder="Ej: 80000">
+        </div>
+        <div class="field">
+          <label for="w-valorHoraExtra">Valor hora extra</label>
+          <input type="number" id="w-valorHoraExtra" min="0" step="any" placeholder="Ej: 6500">
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Guardar trabajador</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: nuevo / editar equipo ---------- -->
+<div class="modal-backdrop" id="equipoModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="equipoModalTitle">Nuevo equipo</h3>
+      <button class="modal-close" id="closeEquipoModal">✕</button>
+    </div>
+
+    <form id="equipoForm">
+      <div class="field">
+        <label for="eq-nombre">Nombre del equipo</label>
+        <input type="text" id="eq-nombre" placeholder="Ej: Retroexcavadora CAT 420" required>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="eq-tipo">Tipo</label>
+          <input type="text" id="eq-tipo" placeholder="Ej: Retroexcavadora, compactadora">
+        </div>
+        <div class="field">
+          <label for="eq-tarifa">Tarifa por hora</label>
+          <input type="number" id="eq-tarifa" min="0" step="any" placeholder="Opcional">
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Guardar equipo</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: registrar uso de maquinaria ---------- -->
+<div class="modal-backdrop" id="usoModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3>Registrar uso</h3>
+      <button class="modal-close" id="closeUsoModal">✕</button>
+    </div>
+
+    <form id="usoForm">
+      <div class="field">
+        <label for="u-fecha">Fecha</label>
+        <input type="date" id="u-fecha" required>
+      </div>
+
+      <div class="field">
+        <label>¿Cómo quieres registrar las horas?</label>
+        <div class="chip-select" id="metodoUsoChips">
+          <div class="chip selected sel-presente" data-value="directo">Horas directas</div>
+          <div class="chip" data-value="horometro">Horómetro</div>
+          <div class="chip" data-value="horas_reloj">Hora inicio/fin</div>
+        </div>
+      </div>
+
+      <div class="field" id="usoDirectoWrap">
+        <label for="u-horas">Horas trabajadas</label>
+        <input type="number" id="u-horas" min="0" step="any">
+      </div>
+
+      <div class="field-row" id="usoHorometroWrap" style="display:none;">
+        <div class="field">
+          <label for="u-horometroInicial">Horómetro inicial</label>
+          <input type="number" id="u-horometroInicial" min="0" step="any" placeholder="Ej: 1204.5">
+        </div>
+        <div class="field">
+          <label for="u-horometroFinal">Horómetro final</label>
+          <input type="number" id="u-horometroFinal" min="0" step="any" placeholder="Ej: 1210.5">
+        </div>
+      </div>
+
+      <div class="field-row" id="usoRelojWrap" style="display:none;">
+        <div class="field">
+          <label for="u-horaInicio">Hora de inicio</label>
+          <input type="time" id="u-horaInicio">
+        </div>
+        <div class="field">
+          <label for="u-horaFin">Hora de fin</label>
+          <input type="time" id="u-horaFin">
+        </div>
+      </div>
+
+      <div class="field" id="usoCalculadoWrap" style="display:none;">
+        <label>Horas calculadas</label>
+        <div class="personal-resumen-box" id="usoCalculadoBox">—</div>
+      </div>
+
+      <div class="field">
+        <label for="u-operador">Operador</label>
+        <input type="text" id="u-operador" placeholder="Ej: Juan Gómez">
+      </div>
+      <div class="field">
+        <label for="u-nota">Nota</label>
+        <input type="text" id="u-nota" placeholder="Ej: Excavación cimentación eje B">
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Guardar uso</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: nuevo / editar movimiento de caja menor ---------- -->
+<div class="modal-backdrop" id="cajaModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="cajaModalTitle">Nuevo movimiento</h3>
+      <button class="modal-close" id="closeCajaModal">✕</button>
+    </div>
+
+    <form id="cajaForm">
+      <div class="field">
+        <label>Tipo de movimiento</label>
+        <div class="chip-select" id="cajaTipoChips">
+          <div class="chip" data-value="ingreso">⬇ Ingreso</div>
+          <div class="chip selected sel-ausente" data-value="gasto">⬆ Gasto</div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="c-valor">Valor</label>
+          <input type="number" id="c-valor" min="0" step="any" required>
+        </div>
+        <div class="field">
+          <label for="c-fecha">Fecha</label>
+          <input type="date" id="c-fecha" required>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="c-concepto">Concepto</label>
+        <input type="text" id="c-concepto" placeholder="Ej: Compra de guantes y tapabocas" required>
+      </div>
+
+      <div class="field">
+        <label for="c-nota">Nota (opcional)</label>
+        <input type="text" id="c-nota" placeholder="Detalle adicional, proveedor, etc.">
+      </div>
+
+      <div class="field">
+        <label>Foto de la factura</label>
+        <div class="photo-grid" id="cajaPhotoGrid"></div>
+        <input type="file" id="cajaPhotoCamera" accept="image/*" capture="environment" style="display:none">
+        <input type="file" id="cajaPhotoGallery" accept="image/*" multiple style="display:none">
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Guardar movimiento</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: nuevo / editar pedido de material ---------- -->
+<div class="modal-backdrop" id="pedidoModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="pedidoModalTitle">Nuevo pedido</h3>
+      <button class="modal-close" id="closePedidoModal">✕</button>
+    </div>
+
+    <form id="pedidoForm">
+      <div class="field">
+        <label for="p-material">Material</label>
+        <input type="text" id="p-material" placeholder="Ej: Varilla 3/8&quot;" required>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="p-cantidad">Cantidad</label>
+          <input type="number" id="p-cantidad" min="0" step="any" required>
+        </div>
+        <div class="field">
+          <label for="p-unidad">Unidad</label>
+          <input type="text" id="p-unidad" placeholder="Ej: unidades, bultos, m³">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="p-proveedor">Proveedor</label>
+        <input type="text" id="p-proveedor" placeholder="Opcional">
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="p-fechaSolicitud">Fecha de solicitud</label>
+          <input type="date" id="p-fechaSolicitud" required>
+        </div>
+        <div class="field">
+          <label for="p-fechaNecesaria">Se necesita para</label>
+          <input type="date" id="p-fechaNecesaria">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="p-nota">Observaciones</label>
+        <input type="text" id="p-nota" placeholder="Opcional">
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Guardar pedido</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: nueva / editar tarea ---------- -->
+<div class="modal-backdrop" id="tareaModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="tareaModalTitle">Nueva tarea</h3>
+      <button class="modal-close" id="closeTareaModal">✕</button>
+    </div>
+
+    <form id="tareaForm">
+      <div class="field">
+        <label for="t-titulo">Título</label>
+        <input type="text" id="t-titulo" placeholder="Ej: Entregar informe de avance" required>
+      </div>
+
+      <div class="field">
+        <label for="t-descripcion">Descripción (opcional)</label>
+        <textarea id="t-descripcion" placeholder="Detalles de la tarea..."></textarea>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="t-fechaLimite">Fecha límite</label>
+          <input type="date" id="t-fechaLimite" required>
+        </div>
+        <div class="field">
+          <label for="t-anticipacion">Avisar con (días)</label>
+          <input type="number" id="t-anticipacion" min="0" value="2">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Prioridad</label>
+        <div class="chip-select" id="tareaPrioridadChips">
+          <div class="chip" data-value="Alta">Alta</div>
+          <div class="chip" data-value="Media">Media</div>
+          <div class="chip" data-value="Baja">Baja</div>
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Guardar tarea</button>
+    </form>
+  </div>
+</div>
+
+<div id="print-area"></div>
+<div class="toast" id="toast"></div>
+
+<!-- ---------- MODAL: nuevo / editar día trabajado ---------- -->
+<div class="modal-backdrop" id="diaModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="diaModalTitle">Nuevo día trabajado</h3>
+      <button class="modal-close" id="closeDiaModal">✕</button>
+    </div>
+
+    <form id="diaForm">
+      <div class="field">
+        <label for="d-fecha">Fecha</label>
+        <input type="date" id="d-fecha" required>
+      </div>
+
+      <div class="field">
+        <label>Tipo de actividad</label>
+        <div class="chip-select" id="diaTipoChips">
+          <div class="chip" data-value="Obra">Obra</div>
+          <div class="chip" data-value="Informes">Informes</div>
+          <div class="chip" data-value="Oficina/Trámites">Oficina/Trámites</div>
+          <div class="chip" data-value="Otro">Otro</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="d-descripcion">Qué se hizo ese día</label>
+        <textarea id="d-descripcion" placeholder="Ej: Elaboración de informe de avance, revisión de planos..."></textarea>
+        <p class="backup-note" style="margin-top:4px;">Esta descripción solo se ve aquí en la app — no se incluye en el reporte Excel.</p>
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Guardar día</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: cambiar / crear obra ---------- -->
+<div class="modal-backdrop" id="obraModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3>Tus obras</h3>
+      <button class="modal-close" id="closeObraModal">✕</button>
+    </div>
+    <div id="obraListSwitch"></div>
+    <div class="field" style="margin-top:16px;">
+      <label for="newObraNombre">Nueva obra</label>
+      <input type="text" id="newObraNombre" placeholder="Ej: CREA - Subsanaciones">
+    </div>
+    <button type="button" class="btn btn-primary btn-block" id="btnCrearObra">+ Crear y cambiar a esta obra</button>
+  </div>
+</div>
+
+<!-- ---------- MODAL: bienvenida (primera obra) ---------- -->
+<div class="modal-backdrop" id="onboardingModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3>¡Bienvenido!</h3>
+    </div>
+    <p class="backup-note">Para empezar, dinos el nombre de tu primera obra. Más adelante podrás agregar otras y cambiar entre ellas desde el encabezado.</p>
+    <form id="onboardingForm">
+      <div class="field" style="margin-top:12px;">
+        <label for="onb-nombre">Nombre de la obra</label>
+        <input type="text" id="onb-nombre" placeholder="Ej: Cancha Sintética" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Comenzar</button>
+    </form>
+  </div>
+</div>
+
+<script src="exceljs.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
