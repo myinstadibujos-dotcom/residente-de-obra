@@ -302,6 +302,7 @@ service cloud.firestore {
   <!-- ---------- DÍAS TRABAJADOS ---------- -->
   <section class="screen" id="screen-dias">
     <h2 class="section-title">Días trabajados</h2>
+    <p class="backup-note" style="margin: -4px 0 12px;">Los días que tienen registro en la Bitácora se cuentan solos (como tipo Obra). Si uno se registró solo por trámite y no se trabajó, ábrelo aquí y márcalo como "No cuenta". Si además cargas el mismo día a mano, se usa ese y no se cuenta doble.</p>
 
     <div class="card">
       <label style="display:block; font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;">Alcance</label>
@@ -325,7 +326,7 @@ service cloud.firestore {
     <div id="diasList"></div>
 
     <button type="button" class="btn btn-primary btn-block" id="btnReporteExcel" style="margin: 6px 0 24px;">📊 Generar reporte Excel del periodo</button>
-    <p class="backup-note" style="margin-top:-14px; margin-bottom:22px;">El Excel incluye fecha, día de la semana y tipo de actividad. La descripción de lo que hiciste ese día queda solo en la app, no se exporta.</p>
+    <p class="backup-note" style="margin-top:-14px; margin-bottom:22px;">El Excel incluye solo los días que cuentan: fecha, día de la semana y tipo de actividad. La descripción de lo que hiciste ese día queda solo en la app, no se exporta.</p>
   </section>
 
   <!-- ---------- TAREAS / PENDIENTES ---------- -->
@@ -489,28 +490,64 @@ service cloud.firestore {
       </div>
 
       <div class="field">
+        <label>Horario de trabajo</label>
+        <div class="horario-row">
+          <input type="time" id="f-horario-desde" aria-label="Hora de entrada">
+          <span>a</span>
+          <input type="time" id="f-horario-hasta" aria-label="Hora de salida">
+          <span class="duracion-txt" id="horarioTotal"></span>
+        </div>
+        <p class="backup-note" style="margin-top:5px;">Se recuerda el último horario que usaste para que no tengas que escribirlo cada día. Déjalo vacío si ese día no se trabajó.</p>
+      </div>
+
+      <div class="field">
+        <label class="clima-check"><input type="checkbox" id="f-cuenta-dia" checked> Cuenta como día trabajado</label>
+        <p class="backup-note" style="margin-top:5px;">Quita la marca si este registro se hizo solo por un tema administrativo y ese día en realidad no se trabajó. Así no se suma en Días trabajados.</p>
+      </div>
+
+      <div class="field">
         <label>Personal en obra (automático desde Asistencia)</label>
         <div class="personal-resumen-box" id="personalResumenBox">—</div>
       </div>
 
       <div class="field">
-        <label>Clima (puedes elegir varios y cuánto duró cada uno)</label>
+        <label>Clima (elige los que hubo y de qué hora a qué hora)</label>
         <div class="clima-list" id="climaList">
           <div class="clima-row" data-value="Soleado">
             <label class="clima-check"><input type="checkbox" class="clima-toggle">☀ Soleado</label>
-            <input type="number" class="clima-horas" min="0" step="any" placeholder="Horas" style="display:none;">
+            <div class="clima-horario">
+              <input type="time" class="clima-desde" aria-label="Hora de inicio">
+              <span>a</span>
+              <input type="time" class="clima-hasta" aria-label="Hora final">
+              <span class="duracion-txt clima-duracion"></span>
+            </div>
           </div>
           <div class="clima-row" data-value="Nublado">
             <label class="clima-check"><input type="checkbox" class="clima-toggle">☁ Nublado</label>
-            <input type="number" class="clima-horas" min="0" step="any" placeholder="Horas" style="display:none;">
+            <div class="clima-horario">
+              <input type="time" class="clima-desde" aria-label="Hora de inicio">
+              <span>a</span>
+              <input type="time" class="clima-hasta" aria-label="Hora final">
+              <span class="duracion-txt clima-duracion"></span>
+            </div>
           </div>
           <div class="clima-row" data-value="Lluvia">
             <label class="clima-check"><input type="checkbox" class="clima-toggle">🌧 Lluvia</label>
-            <input type="number" class="clima-horas" min="0" step="any" placeholder="Horas" style="display:none;">
+            <div class="clima-horario">
+              <input type="time" class="clima-desde" aria-label="Hora de inicio">
+              <span>a</span>
+              <input type="time" class="clima-hasta" aria-label="Hora final">
+              <span class="duracion-txt clima-duracion"></span>
+            </div>
           </div>
           <div class="clima-row" data-value="Lluvia parcial">
             <label class="clima-check"><input type="checkbox" class="clima-toggle">🌦 Lluvia parcial</label>
-            <input type="number" class="clima-horas" min="0" step="any" placeholder="Horas" style="display:none;">
+            <div class="clima-horario">
+              <input type="time" class="clima-desde" aria-label="Hora de inicio">
+              <span>a</span>
+              <input type="time" class="clima-hasta" aria-label="Hora final">
+              <span class="duracion-txt clima-duracion"></span>
+            </div>
           </div>
         </div>
       </div>

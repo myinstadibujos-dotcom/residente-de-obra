@@ -492,6 +492,7 @@ h2.section-title {
 }
 .clima-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -800,3 +801,23 @@ h2.section-title {
     padding: 24px;
   }
 }
+
+/* ---------- Horarios (clima y jornada) ---------- */
+.clima-horario {
+  display: none;
+  flex-basis: 100%;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.clima-horario.visible { display: flex; }
+.clima-horario input[type="time"], .horario-row input[type="time"] {
+  width: auto;
+  min-width: 118px;
+  padding: 7px 8px !important;
+}
+.horario-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.duracion-txt { font-family: var(--font-mono); font-size: 0.8rem; color: var(--turf-dark); }
+.duracion-txt.error { color: var(--accent, #E07B39); }
+.dia-excluido { opacity: 0.6; }

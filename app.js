@@ -1137,10 +1137,50 @@ async function renderDiasScreen() {
   await filtrarYRenderDias();
 }
 
+// Une los días cargados a mano con los días que tienen registro en Bitácora.
+// Un día (obra + fecha) cuenta una sola vez: si existe el manual, se usa ese.
+async function getDiasUnificados(todasLasObras) {
+  const manuales = await getAllDias(todasLasObras);
+  const bit = todasLasObras ? await getAllFromStore("bitacora") : await getAllEntries();
+  const claveManual = new Set(manuales.map((d) => d.obraId + "|" + d.fecha));
+  const grupos = {};
+  bit.forEach((e) => {
+    const k = e.obraId + "|" + e.fecha;
+    if (claveManual.has(k)) return;
+    if (!grupos[k]) grupos[k] = [];
+    grupos[k].push(e);
+  });
+  const derivados = Object.values(grupos).map((es) => ({
+    id: "b" + es[0].id,
+    origen: "bitacora",
+    obraId: es[0].obraId,
+    fecha: es[0].fecha,
+    tipo: "Obra",
+    descripcion: es.map((e) => e.actividades).filter(Boolean).join(" / "),
+    entryIds: es.map((e) => e.id),
+    cuenta: es.some((e) => e.cuentaComoDia !== false),
+  }));
+  const lista = [...manuales.map((d) => ({ ...d, origen: "manual", cuenta: true })), ...derivados];
+  return lista.sort((a, b) => b.fecha.localeCompare(a.fecha) || String(b.id).localeCompare(String(a.id)));
+}
+
+async function toggleDiaBitacora(ids, nuevoValor) {
+  const todas = await getAllFromStore("bitacora");
+  for (const id of ids) {
+    const e = todas.find((x) => x.id === id);
+    if (e) { e.cuentaComoDia = nuevoValor; await saveEntry(e); }
+  }
+  showToast(nuevoValor ? "El día vuelve a contar" : "Día marcado como no trabajado");
+  filtrarYRenderDias();
+  renderEntryList();
+}
+
 async function filtrarYRenderDias() {
   const modoTodas = diasScope === "todas";
-  const todas = await getAllDias(modoTodas);
-  const filtradas = todas.filter((d) => d.fecha >= diasInicio && d.fecha <= diasFin);
+  const todas = await getDiasUnificados(modoTodas);
+  const filtradasTodas = todas.filter((d) => d.fecha >= diasInicio && d.fecha <= diasFin);
+  const filtradas = filtradasTodas.filter((d) => d.cuenta);
+  const excluidos = filtradasTodas.length - filtradas.length;
   diasFiltradasActuales = filtradas;
 
   let obraNombreMap = {};
@@ -1162,10 +1202,11 @@ async function filtrarYRenderDias() {
     <div class="stat-row">
       <div class="stat-box"><div class="num">${filtradas.length}</div><div class="label">DÍAS TRABAJADOS EN EL PERIODO</div></div>
     </div>
-    ${modoTodas && desgloseObras ? `<p class="backup-note" style="margin: -6px 0 14px;">${desgloseObras}</p>` : ""}`;
+    ${modoTodas && desgloseObras ? `<p class="backup-note" style="margin: -6px 0 14px;">${desgloseObras}</p>` : ""}
+    ${excluidos ? `<p class="backup-note" style="margin: -6px 0 14px;">${excluidos} día${excluidos > 1 ? "s" : ""} de Bitácora marcado${excluidos > 1 ? "s" : ""} como "No cuenta" (no suma${excluidos > 1 ? "n" : ""} aquí ni en el Excel).</p>` : ""}`;
 
   const listEl = document.getElementById("diasList");
-  if (!filtradas.length) {
+  if (!filtradasTodas.length) {
     listEl.innerHTML = `
       <div class="empty-state">
         <div class="big">📅</div>
@@ -1174,7 +1215,7 @@ async function filtrarYRenderDias() {
     return;
   }
 
-  listEl.innerHTML = filtradas.map((d) => renderDiaCard(d, obraNombreMap[d.obraId])).join("");
+  listEl.innerHTML = filtradasTodas.map((d) => renderDiaCard(d, obraNombreMap[d.obraId])).join("");
   listEl.querySelectorAll(".entry-head").forEach((head) => {
     head.addEventListener("click", () => head.parentElement.classList.toggle("open"));
   });
@@ -1184,28 +1225,37 @@ async function filtrarYRenderDias() {
   listEl.querySelectorAll("[data-action='delete-dia']").forEach((btn) => {
     btn.addEventListener("click", (ev) => { ev.stopPropagation(); handleDeleteDia(parseInt(btn.dataset.id)); });
   });
+  listEl.querySelectorAll("[data-action='toggle-dia-bitacora']").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      toggleDiaBitacora(btn.dataset.ids.split(",").map(Number), btn.dataset.cuenta === "1");
+    });
+  });
 }
 
 function renderDiaCard(d, obraNombre) {
   const meta = TIPOS_DIA.find((t) => t.value === d.tipo) || TIPOS_DIA[0];
+  const deBitacora = d.origen === "bitacora";
+  const acciones = deBitacora
+    ? `<button class="btn ${d.cuenta ? "btn-danger" : "btn-primary"}" data-action="toggle-dia-bitacora" data-ids="${d.entryIds.join(",")}" data-cuenta="${d.cuenta ? "0" : "1"}">${d.cuenta ? "Marcar como NO trabajado" : "Volver a contar este día"}</button>`
+    : `<button class="btn btn-secondary" data-action="edit-dia" data-id="${d.id}">Editar</button>
+       <button class="btn btn-danger" data-action="delete-dia" data-id="${d.id}">Eliminar</button>`;
   return `
-  <div class="entry" data-id="${d.id}">
+  <div class="entry ${d.cuenta ? "" : "dia-excluido"}" data-id="${d.id}">
     <div class="entry-head">
       <div>
         <div class="entry-date">${formatFechaLarga(d.fecha)}</div>
-        <div class="entry-meta">${capitalizar(nombreDiaSemana(d.fecha))}${obraNombre ? " · " + escapeHtml(obraNombre) : ""}</div>
+        <div class="entry-meta">${capitalizar(nombreDiaSemana(d.fecha))}${obraNombre ? " · " + escapeHtml(obraNombre) : ""}${deBitacora ? " · 📖 Bitácora" : ""}</div>
       </div>
       <div style="text-align:right;">
-        <span class="chip ${meta.cls}" style="pointer-events:none; padding:5px 10px; font-size:0.72rem;">${d.tipo}</span>
+        <span class="chip ${d.cuenta ? meta.cls : ""}" style="pointer-events:none; padding:5px 10px; font-size:0.72rem;">${d.cuenta ? d.tipo : "No cuenta"}</span>
         <span class="entry-caret">▾</span>
       </div>
     </div>
     <div class="entry-body">
-      ${d.descripcion ? `<div class="entry-block"><div class="k">Qué se hizo (solo visible en la app)</div><div class="v">${escapeHtml(d.descripcion)}</div></div>` : ""}
-      <div class="entry-actions">
-        <button class="btn btn-secondary" data-action="edit-dia" data-id="${d.id}">Editar</button>
-        <button class="btn btn-danger" data-action="delete-dia" data-id="${d.id}">Eliminar</button>
-      </div>
+      ${d.descripcion ? `<div class="entry-block"><div class="k">${deBitacora ? "Actividades de la bitácora" : "Qué se hizo (solo visible en la app)"}</div><div class="v">${escapeHtml(d.descripcion)}</div></div>` : ""}
+      ${deBitacora ? `<p class="backup-note">Este día viene de tu Bitácora. Para cambiar su contenido, edítalo allá.</p>` : ""}
+      <div class="entry-actions">${acciones}</div>
     </div>
   </div>`;
 }
@@ -1832,9 +1882,12 @@ function renderEntryCard(entry) {
       <span class="entry-caret">▾</span>
     </div>
     <div class="entry-body">
+      ${entry.cuentaComoDia === false ? `<div class="entry-block"><div class="v" style="color:var(--accent,#E07B39);">⚠ Este día NO cuenta como día trabajado.</div></div>` : ""}
+      ${formatHorarioEntry(entry) ? `<div class="entry-block"><div class="k">Horario de trabajo</div><div class="v">${formatHorarioEntry(entry)}</div></div>` : ""}
+      ${Array.isArray(entry.clima) && entry.clima.some((c) => c.desde && c.hasta) ? `<div class="entry-block"><div class="k">Clima</div><div class="v">${formatClima(entry.clima, true)}</div></div>` : ""}
       ${pr.detalleTexto ? `<div class="entry-block"><div class="k">Personal en obra</div><div class="v">${pr.detalleTexto} — Total: ${pr.total}</div></div>` : ""}
       ${entry.actividades ? `<div class="entry-block"><div class="k">Actividades</div><div class="v">${escapeHtml(entry.actividades)}</div></div>` : ""}
-      ${formatMaquinariaEntry(entry) ? `<div class="entry-block"><div class="k">Maquinaria y equipos</div><div class="v">${escapeHtml(formatMaquinariaEntry(entry))}</div></div>` : ""}
+      <div class="entry-block"><div class="k">Maquinaria y equipos</div><div class="v">${escapeHtml(formatMaquinariaEntry(entry))}</div></div>
       ${entry.materiales ? `<div class="entry-block"><div class="k">Materiales recibidos</div><div class="v">${escapeHtml(entry.materiales)}</div></div>` : ""}
       ${entry.incidentes ? `<div class="entry-block"><div class="k">Incidentes / observaciones</div><div class="v">${escapeHtml(entry.incidentes)}</div></div>` : ""}
       ${photos ? `<div class="entry-block"><div class="k">Fotos</div><div class="photo-grid">${photos}</div></div>` : ""}
@@ -1871,9 +1924,10 @@ async function printEntry(id) {
 
   document.getElementById("print-area").innerHTML = `
     <h2 style="font-family:sans-serif;">Bitácora de obra — ${formatFechaCompleta(entry.fecha)}</h2>
-    <p style="font-family:sans-serif;"><b>Clima:</b> ${formatClima(entry.clima)} &nbsp; <b>Personal en obra:</b> ${(() => { const pr = formatPersonalEntry(entry); return pr.detalleTexto ? `${pr.detalleTexto} — Total: ${pr.total}` : pr.total; })()}</p>
+    ${formatHorarioEntry(entry) ? `<p style="font-family:sans-serif;"><b>Horario de trabajo:</b> ${formatHorarioEntry(entry)}</p>` : ""}
+    <p style="font-family:sans-serif;"><b>Clima:</b> ${formatClima(entry.clima, true)} &nbsp; <b>Personal en obra:</b> ${(() => { const pr = formatPersonalEntry(entry); return pr.detalleTexto ? `${pr.detalleTexto} — Total: ${pr.total}` : pr.total; })()}</p>
     <p style="font-family:sans-serif;"><b>Actividades realizadas:</b><br>${(entry.actividades || "-").replace(/\n/g,"<br>")}</p>
-    <p style="font-family:sans-serif;"><b>Maquinaria y equipos:</b><br>${escapeHtml(formatMaquinariaEntry(entry) || "-")}</p>
+    <p style="font-family:sans-serif;"><b>Maquinaria y equipos:</b><br>${escapeHtml(formatMaquinariaEntry(entry))}</p>
     <p style="font-family:sans-serif;"><b>Materiales recibidos:</b><br>${(entry.materiales || "-").replace(/\n/g,"<br>")}</p>
     <p style="font-family:sans-serif;"><b>Incidentes / observaciones:</b><br>${(entry.incidentes || "-").replace(/\n/g,"<br>")}</p>
     <div>${photos}</div>
@@ -3727,6 +3781,12 @@ function openNewModal() {
   resetAiUndo();
   renderPhotoGrid();
   actualizarResumenesFecha();
+  getSetting("horarioPorDefecto").then((hp) => {
+    document.getElementById("f-horario-desde").value = (hp && hp.desde) || "";
+    document.getElementById("f-horario-hasta").value = (hp && hp.hasta) || "";
+    actualizarHorarioTotal();
+  });
+  document.getElementById("f-cuenta-dia").checked = true;
   modal.classList.add("open");
 }
 
@@ -3742,6 +3802,10 @@ async function openEditModal(id) {
   document.getElementById("f-materiales").value = entry.materiales || "";
   document.getElementById("f-incidentes").value = entry.incidentes || "";
   setClimaFields(entry.clima);
+  document.getElementById("f-horario-desde").value = entry.horarioDesde || "";
+  document.getElementById("f-horario-hasta").value = entry.horarioHasta || "";
+  actualizarHorarioTotal();
+  document.getElementById("f-cuenta-dia").checked = entry.cuentaComoDia !== false;
   resetAiUndo();
   renderPhotoGrid();
   actualizarResumenesFecha();
@@ -3813,9 +3877,9 @@ function formatMaquinariaDetalle(detalle) {
 
 function formatMaquinariaEntry(entry) {
   if (Array.isArray(entry.maquinariaDetalle)) {
-    return entry.maquinariaDetalle.length ? formatMaquinariaDetalle(entry.maquinariaDetalle) : null;
+    return entry.maquinariaDetalle.length ? formatMaquinariaDetalle(entry.maquinariaDetalle) : "No se utilizó maquinaria";
   }
-  return entry.maquinaria || null; // registro antiguo, texto libre
+  return entry.maquinaria || "No se utilizó maquinaria"; // registro antiguo: texto libre o nada
 }
 
 let maquinariaResumenActual = { detalle: [] };
@@ -3827,7 +3891,7 @@ async function actualizarMaquinariaResumen() {
   maquinariaResumenActual = await computeMaquinariaResumen(fecha);
   box.innerHTML = maquinariaResumenActual.detalle.length
     ? formatMaquinariaDetalle(maquinariaResumenActual.detalle)
-    : `Sin equipos registrados en Maquinaria para esta fecha. <a href="#" id="linkIrMaquinaria" style="color:var(--turf-dark);">Ir a Maquinaria →</a>`;
+    : `No se utilizó maquinaria (no hay usos registrados en Maquinaria para esta fecha). <a href="#" id="linkIrMaquinaria" style="color:var(--turf-dark);">Ir a Maquinaria →</a>`;
   const link = document.getElementById("linkIrMaquinaria");
   if (link) link.addEventListener("click", (e) => { e.preventDefault(); closeModal(); goToScreen("maquinaria"); });
 }
@@ -3846,18 +3910,67 @@ function resetAiUndo() {
   document.getElementById("aiUndoIncidentes").style.display = "none";
 }
 
-// ---------- Clima (selección múltiple con duración) ----------
+// ---------- Horas: utilidades ----------
+function minutosEntre(desde, hasta) {
+  if (!desde || !hasta) return null;
+  const [h1, m1] = desde.split(":").map(Number);
+  const [h2, m2] = hasta.split(":").map(Number);
+  const min = (h2 * 60 + m2) - (h1 * 60 + m1);
+  return min > 0 ? min : null;
+}
+
+function formatDuracionMin(min) {
+  const h = Math.floor(min / 60), m = min % 60;
+  if (h && m) return `${h} h ${m} min`;
+  if (h) return `${h} h`;
+  return `${m} min`;
+}
+
+function formatDuracionHoras(horas) { return formatDuracionMin(Math.round(horas * 60)); }
+
+function formatHora12(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  const suf = h >= 12 ? "p. m." : "a. m.";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${suf}`;
+}
+
+// Muestra la duración calculada (o un aviso) junto a un par de horas.
+function pintarDuracion(el, desde, hasta, legacyHoras) {
+  if (desde && hasta) {
+    const min = minutosEntre(desde, hasta);
+    if (min === null) { el.textContent = "⚠ La hora final debe ser después de la inicial"; el.classList.add("error"); return; }
+    el.classList.remove("error");
+    el.textContent = "= " + formatDuracionMin(min);
+  } else if (legacyHoras != null) {
+    el.classList.remove("error");
+    el.textContent = `(antes registrado: ${formatDuracionHoras(legacyHoras)})`;
+  } else {
+    el.classList.remove("error");
+    el.textContent = "";
+  }
+}
+
+// ---------- Clima (selección múltiple con horario) ----------
+function actualizarDuracionClima(row) {
+  pintarDuracion(row.querySelector(".clima-duracion"), row.querySelector(".clima-desde").value, row.querySelector(".clima-hasta").value,
+    row.dataset.horasLegacy !== undefined && row.dataset.horasLegacy !== "" ? parseFloat(row.dataset.horasLegacy) : null);
+}
+
 function resetClimaFields() {
   document.querySelectorAll(".clima-row").forEach((row) => {
     row.querySelector(".clima-toggle").checked = false;
-    const horas = row.querySelector(".clima-horas");
-    horas.style.display = "none";
-    horas.value = "";
+    row.querySelector(".clima-horario").classList.remove("visible");
+    row.querySelector(".clima-desde").value = "";
+    row.querySelector(".clima-hasta").value = "";
+    row.querySelector(".clima-duracion").textContent = "";
+    row.querySelector(".clima-duracion").classList.remove("error");
+    delete row.dataset.horasLegacy;
   });
 }
 
-// Acepta el formato nuevo (array de {tipo, horas}) y el formato viejo (string simple),
-// para que las bitácoras creadas antes de este cambio se sigan viendo bien.
+// Acepta el formato nuevo ({tipo, desde, hasta, horas}), el intermedio ({tipo, horas})
+// y el viejo (string simple), para que las bitácoras anteriores se sigan viendo bien.
 function setClimaFields(clima) {
   resetClimaFields();
   if (!clima) return;
@@ -3866,37 +3979,79 @@ function setClimaFields(clima) {
     const row = document.querySelector(`.clima-row[data-value="${c.tipo}"]`);
     if (!row) return;
     row.querySelector(".clima-toggle").checked = true;
-    const horas = row.querySelector(".clima-horas");
-    horas.style.display = "inline-block";
-    if (c.horas != null) horas.value = c.horas;
+    row.querySelector(".clima-horario").classList.add("visible");
+    if (c.desde) row.querySelector(".clima-desde").value = c.desde;
+    if (c.hasta) row.querySelector(".clima-hasta").value = c.hasta;
+    if (!c.desde && c.horas != null) row.dataset.horasLegacy = c.horas;
+    actualizarDuracionClima(row);
   });
 }
 
 function getClimaFromForm() {
   const lista = [];
   document.querySelectorAll(".clima-row").forEach((row) => {
-    if (row.querySelector(".clima-toggle").checked) {
-      const horasVal = row.querySelector(".clima-horas").value;
-      lista.push({ tipo: row.dataset.value, horas: horasVal !== "" ? parseFloat(horasVal) : null });
-    }
+    if (!row.querySelector(".clima-toggle").checked) return;
+    const desde = row.querySelector(".clima-desde").value || null;
+    const hasta = row.querySelector(".clima-hasta").value || null;
+    const min = minutosEntre(desde, hasta);
+    let horas = null;
+    if (min !== null) horas = Math.round((min / 60) * 100) / 100;
+    else if (!desde && !hasta && row.dataset.horasLegacy) horas = parseFloat(row.dataset.horasLegacy);
+    lista.push({ tipo: row.dataset.value, desde, hasta, horas });
   });
   return lista;
 }
 
-function formatClima(clima) {
+// Devuelve el nombre del primer clima con horas mal puestas (o null si todo está bien).
+function climaConHorasInvalidas() {
+  for (const row of document.querySelectorAll(".clima-row")) {
+    if (!row.querySelector(".clima-toggle").checked) continue;
+    const d = row.querySelector(".clima-desde").value, h = row.querySelector(".clima-hasta").value;
+    if ((d && !h) || (!d && h) || (d && h && minutosEntre(d, h) === null)) return row.dataset.value;
+  }
+  return null;
+}
+
+// detallado = false → "Lluvia (2 h 30 min)"; true → "Lluvia: 2:00 p. m. a 4:30 p. m. (2 h 30 min)"
+function formatClima(clima, detallado) {
   if (!clima) return "Sin clima";
   const lista = Array.isArray(clima) ? clima : [{ tipo: clima, horas: null }];
   if (!lista.length) return "Sin clima";
-  return lista.map((c) => c.tipo + (c.horas != null ? ` (${c.horas}h)` : "")).join(", ");
+  return lista.map((c) => {
+    const dur = c.horas != null ? ` (${formatDuracionHoras(c.horas)})` : "";
+    if (detallado && c.desde && c.hasta) return `${c.tipo}: ${formatHora12(c.desde)} a ${formatHora12(c.hasta)}${dur}`;
+    return c.tipo + dur;
+  }).join(detallado ? "<br>" : ", ");
+}
+
+function formatHorarioEntry(entry) {
+  if (!entry.horarioDesde || !entry.horarioHasta) return null;
+  const min = minutosEntre(entry.horarioDesde, entry.horarioHasta);
+  return `${formatHora12(entry.horarioDesde)} a ${formatHora12(entry.horarioHasta)}${min !== null ? " (" + formatDuracionMin(min) + ")" : ""}`;
 }
 
 document.querySelectorAll(".clima-toggle").forEach((chk) => {
   chk.addEventListener("change", () => {
-    const horas = chk.closest(".clima-row").querySelector(".clima-horas");
-    horas.style.display = chk.checked ? "inline-block" : "none";
-    if (!chk.checked) horas.value = "";
+    const row = chk.closest(".clima-row");
+    row.querySelector(".clima-horario").classList.toggle("visible", chk.checked);
+    if (!chk.checked) {
+      row.querySelector(".clima-desde").value = "";
+      row.querySelector(".clima-hasta").value = "";
+      delete row.dataset.horasLegacy;
+      actualizarDuracionClima(row);
+    }
   });
 });
+document.querySelectorAll(".clima-desde, .clima-hasta").forEach((inp) => {
+  inp.addEventListener("input", () => actualizarDuracionClima(inp.closest(".clima-row")));
+});
+
+// ---------- Horario de trabajo (jornada del día) ----------
+function actualizarHorarioTotal() {
+  pintarDuracion(document.getElementById("horarioTotal"), document.getElementById("f-horario-desde").value, document.getElementById("f-horario-hasta").value, null);
+}
+document.getElementById("f-horario-desde").addEventListener("input", actualizarHorarioTotal);
+document.getElementById("f-horario-hasta").addEventListener("input", actualizarHorarioTotal);
 
 function closeModal() { modal.classList.remove("open"); }
 
@@ -3947,6 +4102,14 @@ document.getElementById("photoGallery").addEventListener("change", (e) => { hand
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
 
+  const climaMalo = climaConHorasInvalidas();
+  if (climaMalo) { alert(`Revisa las horas del clima "${climaMalo}": pon hora de inicio y final, y que la final sea después de la inicial.`); return; }
+  const hDesde = document.getElementById("f-horario-desde").value || null;
+  const hHasta = document.getElementById("f-horario-hasta").value || null;
+  if ((hDesde && !hHasta) || (!hDesde && hHasta) || (hDesde && hHasta && minutosEntre(hDesde, hHasta) === null)) {
+    alert("Revisa el horario de trabajo: pon hora de entrada y de salida, y que la salida sea después de la entrada."); return;
+  }
+
   const fechaSeleccionada = document.getElementById("f-fecha").value;
   const resumenFinal = await computePersonalResumen(fechaSeleccionada);
   const maquinariaFinal = await computeMaquinariaResumen(fechaSeleccionada);
@@ -3956,6 +4119,10 @@ form.addEventListener("submit", async (e) => {
     fecha: fechaSeleccionada,
     personalDetalle: resumenFinal.detalle,
     personalTotal: resumenFinal.total,
+    horarioDesde: hDesde,
+    horarioHasta: hHasta,
+    horarioHoras: hDesde && hHasta ? Math.round((minutosEntre(hDesde, hHasta) / 60) * 100) / 100 : null,
+    cuentaComoDia: document.getElementById("f-cuenta-dia").checked,
     clima: getClimaFromForm(),
     actividades: document.getElementById("f-actividades").value.trim(),
     maquinariaDetalle: maquinariaFinal.detalle,
@@ -3966,6 +4133,7 @@ form.addEventListener("submit", async (e) => {
   if (editingId) entry.id = editingId;
 
   await saveEntry(entry);
+  if (hDesde && hHasta) await setSetting("horarioPorDefecto", { desde: hDesde, hasta: hHasta });
   closeModal();
   showToast("Registro guardado");
   renderEntryList();
