@@ -58,6 +58,64 @@
       <input type="file" id="importFile" accept="application/json" style="display:none">
     </div>
 
+    <details class="manage-section" id="nubeCard">
+      <summary>☁ Respaldo en la nube (gratis)</summary>
+      <div style="margin-top:12px;">
+        <p class="backup-note" id="nubeResumen">Guarda una copia de todos tus datos (con fotos) en tu propia cuenta de Firebase, para no perderlos aunque se dañe o se pierda el celular.</p>
+
+        <div id="nubeConfigBox">
+          <p class="backup-note" style="margin-top:10px;"><b>Configuración (una sola vez, unos 10 minutos):</b></p>
+          <p class="backup-note">1. Entra a console.firebase.google.com con tu cuenta de Google → <b>Crear un proyecto</b> (el nombre es libre; desactiva Google Analytics).</p>
+          <p class="backup-note">2. Menú <b>Compilación → Authentication → Comenzar → Correo electrónico/contraseña</b> → actívalo → Guardar.</p>
+          <p class="backup-note">3. <b>Compilación → Firestore Database → Crear base de datos</b> → elige cualquier ubicación → modo <b>producción</b> → Habilitar.</p>
+          <p class="backup-note">4. En Firestore, pestaña <b>Reglas</b>: borra lo que haya, pega estas reglas y toca <b>Publicar</b>:</p>
+          <pre id="nubeReglas" style="white-space:pre-wrap;font-size:12px;background:var(--bg,#F0F2EC);border:1px solid #d5d9d0;border-radius:8px;padding:8px;user-select:all;">rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /respaldos/{uid}/{document=**} {
+      allow read, write: if request.auth != null
+                         && request.auth.uid == uid;
+    }
+  }
+}</pre>
+          <div class="entry-actions"><button type="button" class="btn btn-secondary" id="btnNubeCopiarReglas">Copiar reglas</button></div>
+          <p class="backup-note" style="margin-top:10px;">5. Engranaje ⚙ → <b>Configuración del proyecto</b> → sección "Tus apps" → ícono web <b>&lt;/&gt;</b> → ponle un nombre y registra (sin Hosting). Copia el bloque <b>firebaseConfig</b> y pégalo aquí:</p>
+          <div class="field">
+            <label for="nubeConfigInput">Configuración de Firebase</label>
+            <textarea id="nubeConfigInput" placeholder='const firebaseConfig = { apiKey: "...", projectId: "...", ... };'></textarea>
+          </div>
+          <button type="button" class="btn btn-primary btn-block" id="btnNubeGuardarConfig">Guardar configuración</button>
+        </div>
+
+        <div id="nubeLoginBox" style="display:none;">
+          <p class="backup-note" style="margin-top:10px;">Crea tu cuenta de respaldo (correo y contraseña de 6 o más caracteres). Si ya la creaste, inicia sesión. Anota bien la contraseña: si la olvidas puedes pedir un correo para cambiarla.</p>
+          <div class="field"><label for="nubeEmail">Correo</label><input type="email" id="nubeEmail" autocomplete="username"></div>
+          <div class="field"><label for="nubePass">Contraseña</label><input type="password" id="nubePass" autocomplete="current-password"></div>
+          <div class="entry-actions">
+            <button type="button" class="btn btn-primary" id="btnNubeEntrar">Iniciar sesión</button>
+            <button type="button" class="btn btn-secondary" id="btnNubeCrear">Crear cuenta</button>
+          </div>
+          <div class="entry-actions">
+            <button type="button" class="btn btn-secondary" id="btnNubeOlvide">Olvidé mi contraseña</button>
+            <button type="button" class="btn btn-danger" id="btnNubeQuitarConfig">Cambiar configuración</button>
+          </div>
+        </div>
+
+        <div id="nubeSesionBox" style="display:none;">
+          <p class="backup-note" id="nubeSesionInfo" style="margin-top:10px;"></p>
+          <div class="entry-actions">
+            <button type="button" class="btn btn-primary" id="btnNubeSubir">☁ Guardar en la nube</button>
+            <button type="button" class="btn btn-secondary" id="btnNubeBajar">⬇ Restaurar desde la nube</button>
+          </div>
+          <div class="entry-actions">
+            <button type="button" class="btn btn-danger" id="btnNubeSalir">Cerrar sesión</button>
+          </div>
+        </div>
+
+        <p class="backup-note" id="nubeStatus" style="margin-top:10px;"></p>
+      </div>
+    </details>
+
     <details class="manage-section">
       <summary>✨ Mejora de redacción con IA (opcional)</summary>
       <div style="margin-top:12px;">

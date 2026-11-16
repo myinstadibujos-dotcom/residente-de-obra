@@ -1,6 +1,6 @@
 // Sube este número cada vez que publiques cambios importantes.
 // No es obligatorio, pero ayuda a limpiar cachés viejas.
-const CACHE_NAME = "residente-obra-v23";
+const CACHE_NAME = "residente-obra-v24";
 
 const APP_SHELL = [
   "./",
@@ -49,6 +49,9 @@ self.addEventListener("notificationclick", (event) => {
 // usa la copia guardada para que la app siga funcionando en obra.
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  // Las llamadas a Firebase (respaldo en la nube) nunca se cachean.
+  const host = new URL(event.request.url).hostname;
+  if (host.endsWith("googleapis.com") && host !== "fonts.googleapis.com") return;
 
   event.respondWith(
     fetch(event.request)

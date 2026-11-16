@@ -4005,20 +4005,7 @@ document.getElementById("importFile").addEventListener("change", (e) => {
       if (!storesPresent.length) throw new Error("Formato inválido");
       const totalRegistros = storesPresent.reduce((sum, s) => sum + data[s].length, 0);
       if (!confirm(`Se restaurarán ${totalRegistros} registros de esta copia (conservando sus fechas e IDs originales). Úsalo idealmente en un teléfono nuevo o vacío para evitar mezclar datos. ¿Continuar?`)) return;
-      for (const store of storesPresent) {
-        for (const record of data[store]) {
-          await putIntoStore(store, record);
-        }
-      }
-      showToast("Copia restaurada");
-      const obras = await getAllObras();
-      if (!obras.find((o) => o.id === currentObraId)) currentObraId = obras[0]?.id ?? currentObraId;
-      await setSetting("obraActualId", currentObraId);
-      await setSetting("ultimoBackupFecha", new Date().toISOString().slice(0, 10));
-      await updateHeaderObraName();
-      renderStats();
-      renderEntryList();
-      renderBackupReminder();
+      await restaurarDatos(data);
     } catch (err) {
       alert("No se pudo leer el archivo. Verifica que sea una copia de seguridad válida.");
     }
@@ -4026,6 +4013,295 @@ document.getElementById("importFile").addEventListener("change", (e) => {
   reader.readAsText(file);
   e.target.value = "";
 });
+
+
+// Restaura un objeto de copia (de archivo o de la nube) sobre la base local.
+async function restaurarDatos(data) {
+  const storesPresent = BACKUP_STORES.filter((s) => Array.isArray(data[s]) && data[s].length);
+  if (!storesPresent.length) throw new Error("Formato inválido");
+  for (const store of storesPresent) {
+    for (const record of data[store]) {
+      await putIntoStore(store, record);
+    }
+  }
+  showToast("Copia restaurada");
+  const obras = await getAllObras();
+  if (!obras.find((o) => o.id === currentObraId)) currentObraId = obras[0]?.id ?? currentObraId;
+  await setSetting("obraActualId", currentObraId);
+  await setSetting("ultimoBackupFecha", new Date().toISOString().slice(0, 10));
+  await updateHeaderObraName();
+  renderStats();
+  renderEntryList();
+  renderBackupReminder();
+}
+
+// ---------- Respaldo en la nube (Firebase por API REST, sin librerías) ----------
+// Estructura en Firestore: respaldos/{uid}/meta/actual  y  respaldos/{uid}/partes/{lote}_{n}
+// La copia se corta en trozos de 300.000 caracteres (límite de Firestore: 1 MB por campo).
+const NUBE_TROZO = 300000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let nubeToken = null, nubeTokenExp = 0, nubeOcupado = false;
+
+function nubeEstado(msg, ok) {
+  const el = document.getElementById("nubeStatus");
+  el.textContent = msg || "";
+  el.style.color = ok === true ? "var(--turf-dark)" : ok === false ? "var(--accent, #E07B39)" : "var(--ink-soft)";
+}
+
+function nubeErrorAuth(code) {
+  const c = String(code || "");
+  if (c.includes("EMAIL_EXISTS")) return "Ese correo ya tiene cuenta. Usa Iniciar sesión.";
+  if (c.includes("INVALID_LOGIN") || c.includes("INVALID_PASSWORD") || c.includes("EMAIL_NOT_FOUND")) return "Correo o contraseña incorrectos.";
+  if (c.includes("WEAK_PASSWORD")) return "La contraseña debe tener al menos 6 caracteres.";
+  if (c.includes("INVALID_EMAIL")) return "El correo no es válido.";
+  if (c.includes("OPERATION_NOT_ALLOWED")) return "Falta activar 'Correo electrónico/contraseña' en Authentication (paso 2).";
+  if (c.includes("TOO_MANY")) return "Demasiados intentos. Espera unos minutos.";
+  if (c.includes("API key")) return "La clave de la configuración no es válida. Revisa el paso 5.";
+  return "No se pudo completar (" + c + ").";
+}
+
+async function nubeAuth(modo, email, password) {
+  const cfg = await getSetting("nubeConfig");
+  const endpoint = modo === "crear" ? "signUp" : "signInWithPassword";
+  let r;
+  try {
+    r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:${endpoint}?key=${cfg.apiKey}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, returnSecureToken: true })
+    });
+  } catch (e) { throw new Error("Sin conexión a internet."); }
+  const j = await r.json();
+  if (!r.ok) throw new Error(nubeErrorAuth(j.error && j.error.message));
+  nubeToken = j.idToken;
+  nubeTokenExp = Date.now() + (parseInt(j.expiresIn, 10) - 120) * 1000;
+  await setSetting("nubeSesion", { email: j.email, refreshToken: j.refreshToken, uid: j.localId });
+}
+
+async function nubeGetToken(forzar) {
+  if (!forzar && nubeToken && Date.now() < nubeTokenExp) return nubeToken;
+  const cfg = await getSetting("nubeConfig");
+  const ses = await getSetting("nubeSesion");
+  if (!cfg || !ses) throw new Error("Inicia sesión primero.");
+  const r = await fetch(`https://securetoken.googleapis.com/v1/token?key=${cfg.apiKey}`, {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "grant_type=refresh_token&refresh_token=" + encodeURIComponent(ses.refreshToken)
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error("La sesión venció. Inicia sesión de nuevo.");
+  nubeToken = j.id_token;
+  nubeTokenExp = Date.now() + (parseInt(j.expires_in, 10) - 120) * 1000;
+  if (j.refresh_token && j.refresh_token !== ses.refreshToken) {
+    await setSetting("nubeSesion", { ...ses, refreshToken: j.refresh_token });
+  }
+  return nubeToken;
+}
+
+async function nubeFS(method, ruta, body, query) {
+  const cfg = await getSetting("nubeConfig");
+  const ses = await getSetting("nubeSesion");
+  if (!cfg || !ses) throw new Error("Inicia sesión primero.");
+  const url = `https://firestore.googleapis.com/v1/projects/${cfg.projectId}/databases/(default)/documents/respaldos/${ses.uid}/${ruta}${query || ""}`;
+  let forzar = false;
+  for (let i = 0; i < 4; i++) {
+    let r;
+    try {
+      r = await fetch(url, {
+        method,
+        headers: { Authorization: "Bearer " + (await nubeGetToken(forzar)), "Content-Type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined
+      });
+    } catch (e) {
+      if (i === 3) throw new Error("Se perdió la conexión a internet.");
+      await sleep(1000 * (i + 1));
+      continue;
+    }
+    if (r.status === 401) { forzar = true; continue; }
+    if (r.status === 429 || r.status >= 500) { await sleep(1500 * (i + 1)); continue; }
+    if (r.status === 404 && method === "GET") return null;
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (r.status === 403) throw new Error("Permiso denegado. Revisa que hayas publicado las reglas (paso 4).");
+      if (r.status === 404) throw new Error("No se encontró la base de datos. Revisa el paso 3 (crear Firestore).");
+      throw new Error((j.error && j.error.message) || "Error " + r.status);
+    }
+    return j;
+  }
+  throw new Error("No se pudo completar. Intenta de nuevo con mejor señal.");
+}
+
+async function nubePool(total, simultaneos, fn, onProgreso) {
+  let sig = 0, hechos = 0, fallo = null;
+  const obreros = Array.from({ length: Math.min(simultaneos, total) }, async () => {
+    while (!fallo) {
+      const i = sig++;
+      if (i >= total) return;
+      try { await fn(i); hechos++; onProgreso && onProgreso(hechos, total); }
+      catch (e) { fallo = e; }
+    }
+  });
+  await Promise.all(obreros);
+  if (fallo) throw fallo;
+}
+
+async function nubeConPantalla(fn) {
+  if (nubeOcupado) return;
+  nubeOcupado = true;
+  let wl = null;
+  try { wl = navigator.wakeLock ? await navigator.wakeLock.request("screen") : null; } catch (e) {}
+  ["btnNubeSubir", "btnNubeBajar"].forEach((id) => (document.getElementById(id).disabled = true));
+  try { await fn(); }
+  catch (e) { nubeEstado("✗ " + e.message, false); }
+  finally {
+    nubeOcupado = false;
+    ["btnNubeSubir", "btnNubeBajar"].forEach((id) => (document.getElementById(id).disabled = false));
+    try { if (wl) await wl.release(); } catch (e) {}
+    renderNube();
+  }
+}
+
+async function nubeSubir() {
+  nubeEstado("Preparando copia…");
+  const data = { exportado: new Date().toISOString() };
+  let registros = 0;
+  for (const store of BACKUP_STORES) {
+    data[store] = await getAllFromStore(store);
+    registros += data[store].length;
+  }
+  const json = JSON.stringify(data);
+  const mb = new Blob([json]).size / 1048576;
+  const partes = Math.ceil(json.length / NUBE_TROZO);
+  if (mb > 8 && !confirm(`La copia pesa unos ${mb.toFixed(1)} MB (por las fotos). Conviene usar WiFi y no cerrar la app mientras sube. ¿Continuar?`)) {
+    nubeEstado("");
+    return;
+  }
+  const lote = Date.now().toString(36);
+  await nubePool(partes, 4, async (i) => {
+    await nubeFS("PATCH", `partes/${lote}_${i}`, {
+      fields: { d: { stringValue: json.slice(i * NUBE_TROZO, (i + 1) * NUBE_TROZO) }, n: { integerValue: String(i) } }
+    });
+  }, (h, t) => nubeEstado(`Subiendo… ${Math.round((h / t) * 100)}% (no cierres la app)`));
+  // El meta se escribe al final: si algo falla antes, la copia anterior sigue intacta.
+  await nubeFS("PATCH", "meta/actual", {
+    fields: {
+      lote: { stringValue: lote }, partes: { integerValue: String(partes) },
+      fecha: { stringValue: new Date().toISOString() }, mb: { doubleValue: Math.round(mb * 10) / 10 },
+      registros: { integerValue: String(registros) }
+    }
+  });
+  // Limpieza de la copia anterior (y de subidas incompletas).
+  try {
+    let token = "";
+    do {
+      const lista = await nubeFS("GET", "partes", null, "?pageSize=300&mask.fieldPaths=n" + (token ? "&pageToken=" + encodeURIComponent(token) : ""));
+      token = lista && lista.nextPageToken || "";
+      const viejos = ((lista && lista.documents) || []).map((d) => d.name.split("/").pop()).filter((id) => !id.startsWith(lote + "_"));
+      await nubePool(viejos.length, 4, (i) => nubeFS("DELETE", "partes/" + viejos[i]));
+    } while (token);
+  } catch (e) { /* no es grave: solo ocupa espacio */ }
+  const hoy = new Date().toISOString().slice(0, 10);
+  await setSetting("nubeUltimaFecha", new Date().toISOString());
+  await setSetting("ultimoBackupFecha", hoy);
+  renderBackupReminder();
+  nubeEstado(`✓ Copia guardada en la nube (${mb.toFixed(1)} MB, ${registros} registros).`, true);
+}
+
+async function nubeBajar() {
+  nubeEstado("Buscando copia…");
+  const meta = await nubeFS("GET", "meta/actual");
+  if (!meta || !meta.fields) { nubeEstado("Todavía no hay ninguna copia en la nube.", false); return; }
+  const f = meta.fields;
+  const lote = f.lote.stringValue, partes = parseInt(f.partes.integerValue, 10);
+  const cuando = new Date(f.fecha.stringValue).toLocaleString("es-CO");
+  const mb = f.mb ? (f.mb.doubleValue ?? f.mb.integerValue) : "?";
+  if (!confirm(`Copia del ${cuando} (${mb} MB). Se mezclará con los datos de este teléfono: lo que hayas borrado después de esa copia puede reaparecer, y lo que cambió se sobrescribe con la versión de la copia. ¿Restaurar?`)) { nubeEstado(""); return; }
+  const trozos = new Array(partes);
+  await nubePool(partes, 4, async (i) => {
+    const d = await nubeFS("GET", `partes/${lote}_${i}`);
+    if (!d || !d.fields) throw new Error("Falta la parte " + (i + 1) + " de la copia. Guarda una copia nueva desde el otro teléfono.");
+    trozos[i] = d.fields.d.stringValue;
+  }, (h, t) => nubeEstado(`Descargando… ${Math.round((h / t) * 100)}%`));
+  const data = JSON.parse(trozos.join(""));
+  nubeEstado("Restaurando…");
+  await restaurarDatos(data);
+  nubeEstado("✓ Copia restaurada desde la nube.", true);
+}
+
+async function renderNube() {
+  const cfg = await getSetting("nubeConfig");
+  const ses = await getSetting("nubeSesion");
+  document.getElementById("nubeConfigBox").style.display = cfg ? "none" : "block";
+  document.getElementById("nubeLoginBox").style.display = cfg && !ses ? "block" : "none";
+  document.getElementById("nubeSesionBox").style.display = cfg && ses ? "block" : "none";
+  if (cfg && ses) {
+    const ult = await getSetting("nubeUltimaFecha");
+    document.getElementById("nubeSesionInfo").textContent = `✓ Conectado como ${ses.email}. ` +
+      (ult ? "Última copia en la nube desde este teléfono: " + new Date(ult).toLocaleString("es-CO") + "." : "Aún no has guardado ninguna copia desde este teléfono.");
+  }
+}
+
+document.getElementById("btnNubeCopiarReglas").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(document.getElementById("nubeReglas").textContent); showToast("Reglas copiadas"); }
+  catch (e) { showToast("Mantén presionado el texto para copiarlo"); }
+});
+
+document.getElementById("btnNubeGuardarConfig").addEventListener("click", async () => {
+  const txt = document.getElementById("nubeConfigInput").value;
+  const key = txt.match(/["']?apiKey["']?\s*:\s*["']([^"']+)["']/);
+  const pid = txt.match(/["']?projectId["']?\s*:\s*["']([^"']+)["']/);
+  if (!key || !pid) { nubeEstado("✗ No encontré apiKey y projectId en lo que pegaste. Copia el bloque firebaseConfig completo.", false); return; }
+  await setSetting("nubeConfig", { apiKey: key[1], projectId: pid[1] });
+  document.getElementById("nubeConfigInput").value = "";
+  nubeEstado("✓ Configuración guardada. Ahora crea tu cuenta o inicia sesión.", true);
+  renderNube();
+});
+
+document.getElementById("btnNubeQuitarConfig").addEventListener("click", async () => {
+  if (!confirm("¿Borrar la configuración de Firebase de este teléfono? Tus copias en la nube NO se borran.")) return;
+  await setSetting("nubeConfig", null);
+  await setSetting("nubeSesion", null);
+  nubeToken = null;
+  nubeEstado("");
+  renderNube();
+});
+
+async function nubeLogin(modo) {
+  const email = document.getElementById("nubeEmail").value.trim();
+  const pass = document.getElementById("nubePass").value;
+  if (!email || !pass) { nubeEstado("✗ Escribe correo y contraseña.", false); return; }
+  nubeEstado("Conectando…");
+  try {
+    await nubeAuth(modo, email, pass);
+    document.getElementById("nubePass").value = "";
+    nubeEstado(modo === "crear" ? "✓ Cuenta creada y sesión iniciada." : "✓ Sesión iniciada.", true);
+    renderNube();
+  } catch (e) { nubeEstado("✗ " + e.message, false); }
+}
+document.getElementById("btnNubeEntrar").addEventListener("click", () => nubeLogin("entrar"));
+document.getElementById("btnNubeCrear").addEventListener("click", () => nubeLogin("crear"));
+
+document.getElementById("btnNubeOlvide").addEventListener("click", async () => {
+  const email = document.getElementById("nubeEmail").value.trim();
+  if (!email) { nubeEstado("✗ Escribe tu correo arriba y vuelve a tocar.", false); return; }
+  const cfg = await getSetting("nubeConfig");
+  try {
+    const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${cfg.apiKey}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestType: "PASSWORD_RESET", email })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(nubeErrorAuth(j.error && j.error.message));
+    nubeEstado("✓ Te enviamos un correo para cambiar la contraseña (revisa también spam).", true);
+  } catch (e) { nubeEstado("✗ " + e.message, false); }
+});
+
+document.getElementById("btnNubeSalir").addEventListener("click", async () => {
+  await setSetting("nubeSesion", null);
+  nubeToken = null;
+  nubeEstado("Sesión cerrada. Tus copias siguen en la nube.");
+  renderNube();
+});
+document.getElementById("btnNubeSubir").addEventListener("click", () => nubeConPantalla(nubeSubir));
+document.getElementById("btnNubeBajar").addEventListener("click", () => nubeConPantalla(nubeBajar));
 
 // ---------- Inicio ----------
 (async function init() {
@@ -4042,6 +4318,7 @@ document.getElementById("importFile").addEventListener("change", (e) => {
   await renderNotifSettings();
   await setupAlmacenamientoPersistente();
   await renderBackupReminder();
+  await renderNube();
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch((err) => console.error("SW error:", err));
