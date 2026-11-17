@@ -572,8 +572,15 @@ service cloud.firestore {
       </div>
 
       <div class="field">
-        <label for="f-materiales">Materiales recibidos</label>
-        <textarea id="f-materiales" placeholder="Ej: 20 m³ de grava, 15 bultos de cemento..."></textarea>
+        <label>Materiales recibidos</label>
+        <div id="matRecList"></div>
+        <button type="button" class="btn btn-secondary btn-block" id="btnAddMatRec">＋ Agregar material recibido</button>
+        <p class="backup-note" style="margin-top:5px;">Elige de tu inventario o crea uno nuevo. Al guardar el registro, la cantidad se suma sola al Inventario.</p>
+      </div>
+
+      <div class="field">
+        <label for="f-materiales">Otras notas sobre materiales (opcional)</label>
+        <textarea id="f-materiales" placeholder="Ej: llegó con retraso, remisión No. 123..."></textarea>
       </div>
 
       <div class="field">
@@ -637,6 +644,36 @@ service cloud.firestore {
 
       <button type="submit" class="btn btn-primary btn-block">Guardar material</button>
     </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: material recibido (desde Bitácora) ---------- -->
+<div class="modal-backdrop" id="matRecModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3>Material recibido</h3>
+      <button type="button" class="modal-close" id="closeMatRecModal">✕</button>
+    </div>
+    <div class="field">
+      <label for="mr-item">Material</label>
+      <select id="mr-item"></select>
+    </div>
+    <div id="mrNuevoBox" style="display:none;">
+      <div class="field">
+        <label for="mr-nombre">Nombre del material nuevo</label>
+        <input type="text" id="mr-nombre" placeholder="Ej: Cemento gris">
+      </div>
+      <div class="field-row">
+        <div class="field"><label for="mr-categoria">Categoría</label><select id="mr-categoria"></select></div>
+        <div class="field"><label for="mr-unidad">Unidad</label><select id="mr-unidad"></select></div>
+      </div>
+      <p class="backup-note">Se agregará al Inventario con stock inicial 0 y se le sumará lo recibido al guardar el registro.</p>
+    </div>
+    <div class="field">
+      <label for="mr-cantidad">Cantidad recibida <span id="mrUnidadTxt" style="color:var(--turf-dark);"></span></label>
+      <input type="number" id="mr-cantidad" min="0" step="any" placeholder="0" inputmode="decimal">
+    </div>
+    <button type="button" class="btn btn-primary btn-block" id="btnMrAgregar">Agregar a la lista</button>
   </div>
 </div>
 

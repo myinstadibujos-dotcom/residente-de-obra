@@ -2047,7 +2047,7 @@ function renderEntryCard(entry) {
       ${pr.detalleTexto ? `<div class="entry-block"><div class="k">Personal en obra</div><div class="v">${pr.detalleTexto} — Total: ${pr.total}</div></div>` : ""}
       ${entry.actividades ? `<div class="entry-block"><div class="k">Actividades</div><div class="v">${escapeHtml(entry.actividades)}</div></div>` : ""}
       <div class="entry-block"><div class="k">Maquinaria y equipos</div><div class="v">${escapeHtml(formatMaquinariaEntry(entry))}</div></div>
-      ${entry.materiales ? `<div class="entry-block"><div class="k">Materiales recibidos</div><div class="v">${escapeHtml(entry.materiales)}</div></div>` : ""}
+      ${formatMaterialesEntry(entry) ? `<div class="entry-block"><div class="k">Materiales recibidos</div><div class="v">${formatMaterialesEntry(entry)}</div></div>` : ""}
       ${entry.incidentes ? `<div class="entry-block"><div class="k">Incidentes / observaciones</div><div class="v">${escapeHtml(entry.incidentes)}</div></div>` : ""}
       ${photos ? `<div class="entry-block"><div class="k">Fotos</div><div class="photo-grid">${photos}</div></div>` : ""}
       <div class="entry-actions">
@@ -2067,6 +2067,12 @@ function escapeHtml(str) {
 
 async function handleDelete(id) {
   if (!confirm("¿Eliminar este registro? Esta acción no se puede deshacer.")) return;
+  const entradas = await getAllEntries();
+  const previo = entradas.find((e) => e.id === id);
+  if (previo && (previo.materialesRecibidos || []).length &&
+      confirm("Este registro sumó materiales al Inventario. ¿Quieres también restarlos del Inventario?\n\nAceptar = restar del inventario\nCancelar = dejar el inventario como está")) {
+    await revertirMatRec(previo.materialesRecibidos);
+  }
   await deleteEntry(id);
   showToast("Registro eliminado");
   renderEntryList();
@@ -2087,7 +2093,7 @@ async function printEntry(id) {
     <p style="font-family:sans-serif;"><b>Clima:</b> ${formatClima(entry.clima, true)} &nbsp; <b>Personal en obra:</b> ${(() => { const pr = formatPersonalEntry(entry); return pr.detalleTexto ? `${pr.detalleTexto} — Total: ${pr.total}` : pr.total; })()}</p>
     <p style="font-family:sans-serif;"><b>Actividades realizadas:</b><br>${(entry.actividades || "-").replace(/\n/g,"<br>")}</p>
     <p style="font-family:sans-serif;"><b>Maquinaria y equipos:</b><br>${escapeHtml(formatMaquinariaEntry(entry))}</p>
-    <p style="font-family:sans-serif;"><b>Materiales recibidos:</b><br>${(entry.materiales || "-").replace(/\n/g,"<br>")}</p>
+    <p style="font-family:sans-serif;"><b>Materiales recibidos:</b><br>${formatMaterialesEntry(entry) || "-"}</p>
     <p style="font-family:sans-serif;"><b>Incidentes / observaciones:</b><br>${(entry.incidentes || "-").replace(/\n/g,"<br>")}</p>
     <div>${photos}</div>
   `;
@@ -3926,6 +3932,153 @@ document.getElementById("btnBorrarGeminiKey").addEventListener("click", async ()
   renderAiSettings();
 });
 
+// ---------- Bitácora: materiales recibidos (conectado al Inventario) ----------
+let currentMatRec = [];      // filas del formulario: {itemId?, nombre, unidad, categoria, cantidad, nuevo?, movId?}
+let originalMatRec = [];     // filas con las que se abrió el registro (para no duplicar al editar)
+let originalMatRecSig = "";
+
+function fmtCantidad(n) { return String(Math.round(n * 100) / 100); }
+
+function firmaMatRec(filas, fecha) {
+  return filas.map((r) => `${r.itemId ? "i" + r.itemId : "n:" + r.nombre.toLowerCase()}|${r.cantidad}`).join(";") + "@" + fecha;
+}
+
+function formatMaterialesEntry(entry) {
+  const partes = [];
+  (entry.materialesRecibidos || []).forEach((r) => {
+    partes.push(`${fmtCantidad(r.cantidad)} ${escapeHtml(r.unidad || "")} de ${escapeHtml(r.nombre)}`.replace("  ", " "));
+  });
+  if (entry.materiales) partes.push(escapeHtml(entry.materiales).replace(/\n/g, "<br>"));
+  return partes.length ? partes.join("<br>") : null;
+}
+
+function renderMatRecList() {
+  const el = document.getElementById("matRecList");
+  el.innerHTML = currentMatRec.map((r, i) => `
+    <div class="matrec-row">
+      <div><b>${fmtCantidad(r.cantidad)}</b> ${escapeHtml(r.unidad || "")} · ${escapeHtml(r.nombre)}${r.nuevo ? '<span class="nuevo-tag">NUEVO</span>' : ""}</div>
+      <button type="button" data-i="${i}" aria-label="Quitar">✕</button>
+    </div>`).join("");
+  el.querySelectorAll("button[data-i]").forEach((b) => b.addEventListener("click", () => {
+    currentMatRec.splice(parseInt(b.dataset.i, 10), 1);
+    renderMatRecList();
+  }));
+}
+
+function getMov(id) {
+  return new Promise((resolve, reject) => {
+    const req = tx("inv_movs", "readonly").get(id);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = (e) => reject(e);
+  });
+}
+function deleteMov(id) {
+  return new Promise((resolve, reject) => {
+    const req = tx("inv_movs", "readwrite").delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = (e) => reject(e);
+  });
+}
+
+// Deshace lo que un registro sumó al inventario (borra el movimiento y resta el stock).
+async function revertirMatRec(filas) {
+  for (const r of filas || []) {
+    if (!r.movId) continue;
+    const mov = await getMov(r.movId);
+    if (!mov) continue;
+    await deleteMov(r.movId);
+    const item = await getItem(mov.itemId);
+    if (item) { item.stock = item.stock - mov.cantidad; await saveItem(item); }
+  }
+}
+
+// Crea los materiales nuevos, registra las entradas y devuelve las filas ya con itemId/movId.
+async function aplicarMatRec(filas, fecha) {
+  const resultado = [];
+  const creados = {};
+  const existentes = await getAllItems();
+  for (const r of filas) {
+    let item = r.itemId ? await getItem(r.itemId) : null;
+    if (!item) {
+      const clave = r.nombre.trim().toLowerCase();
+      item = creados[clave] || existentes.find((it) => it.nombre.trim().toLowerCase() === clave) || null;
+    }
+    if (!item) {
+      const cats = await getAllCategoriasInventario();
+      item = { obraId: currentObraId, nombre: r.nombre.trim(), categoria: r.categoria || (cats[0] && cats[0].nombre) || "", unidad: r.unidad || "", stock: 0, minimo: null };
+      item.id = await saveItem(item);
+    }
+    creados[item.nombre.trim().toLowerCase()] = item;
+    const movId = await addMov({ itemId: item.id, tipo: "entrada", cantidad: r.cantidad, fecha, nota: "Recibido — registro de Bitácora" });
+    const fresco = await getItem(item.id);
+    fresco.stock = fresco.stock + r.cantidad;
+    await saveItem(fresco);
+    resultado.push({ itemId: item.id, nombre: item.nombre, unidad: item.unidad, categoria: item.categoria, cantidad: r.cantidad, movId });
+  }
+  return resultado;
+}
+
+const matRecModal = document.getElementById("matRecModal");
+
+async function llenarSelectLista(selId, lista, valor) {
+  const sel = document.getElementById(selId);
+  sel.innerHTML = lista.map((x) => `<option value="${escapeHtml(x.nombre)}">${escapeHtml(x.nombre)}</option>`).join("");
+  if (valor) sel.value = valor;
+}
+
+async function openMatRecModal() {
+  const items = await getAllItems();
+  const sel = document.getElementById("mr-item");
+  const porCat = {};
+  items.forEach((it) => { (porCat[it.categoria || "Sin categoría"] = porCat[it.categoria || "Sin categoría"] || []).push(it); });
+  sel.innerHTML = `<option value="">— Elige un material del inventario —</option><option value="__nuevo__">➕ Material nuevo (no está en el inventario)</option>` +
+    Object.keys(porCat).sort().map((cat) => `<optgroup label="${escapeHtml(cat)}">${porCat[cat].map((it) => `<option value="${it.id}">${escapeHtml(it.nombre)} (${escapeHtml(it.unidad || "")})</option>`).join("")}</optgroup>`).join("");
+  await llenarSelectLista("mr-categoria", await getAllCategoriasInventario());
+  await llenarSelectLista("mr-unidad", await getAllUnidadesInventario());
+  document.getElementById("mr-nombre").value = "";
+  document.getElementById("mr-cantidad").value = "";
+  sel.value = items.length ? "" : "__nuevo__";
+  actualizarMatRecModal();
+  matRecModal.classList.add("open");
+}
+
+async function actualizarMatRecModal() {
+  const v = document.getElementById("mr-item").value;
+  document.getElementById("mrNuevoBox").style.display = v === "__nuevo__" ? "block" : "none";
+  let u = "";
+  if (v && v !== "__nuevo__") { const it = await getItem(parseInt(v, 10)); u = it ? `(${it.unidad || ""})` : ""; }
+  document.getElementById("mrUnidadTxt").textContent = u;
+}
+
+document.getElementById("btnAddMatRec").addEventListener("click", openMatRecModal);
+document.getElementById("closeMatRecModal").addEventListener("click", () => matRecModal.classList.remove("open"));
+matRecModal.addEventListener("click", (e) => { if (e.target === matRecModal) matRecModal.classList.remove("open"); });
+document.getElementById("mr-item").addEventListener("change", actualizarMatRecModal);
+
+document.getElementById("btnMrAgregar").addEventListener("click", async () => {
+  const v = document.getElementById("mr-item").value;
+  const cantidad = parseFloat(document.getElementById("mr-cantidad").value);
+  if (!v) { showToast("Elige un material o crea uno nuevo"); return; }
+  if (!(cantidad > 0)) { showToast("Escribe la cantidad recibida"); return; }
+  if (v === "__nuevo__") {
+    const nombre = document.getElementById("mr-nombre").value.trim();
+    if (!nombre) { showToast("Escribe el nombre del material"); return; }
+    const existentes = await getAllItems();
+    const igual = existentes.find((it) => it.nombre.trim().toLowerCase() === nombre.toLowerCase());
+    if (igual) {
+      currentMatRec.push({ itemId: igual.id, nombre: igual.nombre, unidad: igual.unidad, categoria: igual.categoria, cantidad });
+      showToast(`"${igual.nombre}" ya estaba en tu inventario; se usó ese`);
+    } else {
+      currentMatRec.push({ nombre, unidad: document.getElementById("mr-unidad").value, categoria: document.getElementById("mr-categoria").value, cantidad, nuevo: true });
+    }
+  } else {
+    const it = await getItem(parseInt(v, 10));
+    currentMatRec.push({ itemId: it.id, nombre: it.nombre, unidad: it.unidad, categoria: it.categoria, cantidad });
+  }
+  renderMatRecList();
+  matRecModal.classList.remove("open");
+});
+
 // ---------- Modal: nuevo / editar registro de bitácora ----------
 const modal = document.getElementById("entryModal");
 const form = document.getElementById("entryForm");
@@ -3933,6 +4086,10 @@ const form = document.getElementById("entryForm");
 function openNewModal() {
   editingId = null;
   currentPhotos = [];
+  currentMatRec = [];
+  originalMatRec = [];
+  originalMatRecSig = "";
+  renderMatRecList();
   form.reset();
   document.getElementById("modalTitle").textContent = "Nuevo registro";
   document.getElementById("f-fecha").value = new Date().toISOString().slice(0, 10);
@@ -3956,6 +4113,10 @@ async function openEditModal(id) {
   if (!entry) return;
   editingId = id;
   currentPhotos = [...(entry.fotos || [])];
+  originalMatRec = (entry.materialesRecibidos || []).map((r) => ({ ...r }));
+  currentMatRec = originalMatRec.map((r) => ({ ...r }));
+  originalMatRecSig = firmaMatRec(originalMatRec, entry.fecha);
+  renderMatRecList();
   document.getElementById("modalTitle").textContent = "Editar registro";
   document.getElementById("f-fecha").value = entry.fecha;
   document.getElementById("f-actividades").value = entry.actividades || "";
@@ -4310,9 +4471,19 @@ form.addEventListener("submit", async (e) => {
   const resumenFinal = await computePersonalResumen(fechaSeleccionada);
   const maquinariaFinal = await computeMaquinariaResumen(fechaSeleccionada);
 
+  // Inventario: solo se toca si cambió la lista de materiales o la fecha (así no se duplica al editar).
+  let filasMat;
+  if (editingId && firmaMatRec(currentMatRec, fechaSeleccionada) === originalMatRecSig) {
+    filasMat = originalMatRec;
+  } else {
+    await revertirMatRec(originalMatRec);
+    filasMat = await aplicarMatRec(currentMatRec, fechaSeleccionada);
+  }
+
   const entry = {
     obraId: currentObraId,
     fecha: fechaSeleccionada,
+    materialesRecibidos: filasMat,
     personalDetalle: resumenFinal.detalle,
     personalTotal: resumenFinal.total,
     horarioDesde: hDesde,

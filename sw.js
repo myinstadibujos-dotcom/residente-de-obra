@@ -1,6 +1,6 @@
 // Sube este número cada vez que publiques cambios importantes.
 // No es obligatorio, pero ayuda a limpiar cachés viejas.
-const CACHE_NAME = "residente-obra-v27";
+const CACHE_NAME = "residente-obra-v28";
 
 const APP_SHELL = [
   "./",
