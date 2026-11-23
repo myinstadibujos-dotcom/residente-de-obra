@@ -1178,11 +1178,13 @@ function semanaLunesSabadoCompleta(set, domingoISO) {
 }
 
 // Domingos del periodo que cuentan por la regla y que no tienen registro propio.
+let diasModoPorObra = {}; // obraId → "dominical" | "dia_trabajado"
 function calcularDominicales(sets, inicio, fin) {
   const lista = [];
   for (let iso = inicio; iso <= fin; iso = addDiasISO(iso, 1)) {
     if (new Date(iso + "T00:00:00").getDay() !== 0) continue;
     Object.keys(sets).forEach((obraId) => {
+      if ((diasModoPorObra[obraId] || "dominical") === "dia_trabajado") return;
       if (!sets[obraId].has(iso) && semanaLunesSabadoCompleta(sets[obraId], iso)) lista.push({ obraId: Number(obraId), fecha: iso });
     });
   }
@@ -1211,6 +1213,8 @@ async function filtrarYRenderDias() {
   const excluidos = filtradasTodas.length - filtradas.length;
   diasFiltradasActuales = filtradas;
   diasContadasTodasActuales = todas.filter((d) => d.cuenta);
+  diasModoPorObra = {};
+  (await getAllObras()).forEach((o) => { diasModoPorObra[o.id] = o.modoPago || "dominical"; });
   diasDominicalesActuales = calcularDominicales(armarSetsPorObra(diasContadasTodasActuales), diasInicio, diasFin);
   const totalConDominicales = filtradas.length + diasDominicalesActuales.length;
 
@@ -1399,7 +1403,7 @@ document.getElementById("btnReporteExcel").addEventListener("click", async () =>
 
     function valorDia(obraId, iso) {
       const set = setsPorObra[obraId] || new Set();
-      if (new Date(iso + "T00:00:00").getDay() === 0) return set.has(iso) || semanaLunesSabadoCompleta(set, iso);
+      if (new Date(iso + "T00:00:00").getDay() === 0) return set.has(iso) || ((diasModoPorObra[obraId] || "dominical") !== "dia_trabajado" && semanaLunesSabadoCompleta(set, iso));
       return set.has(iso);
     }
 
@@ -1538,7 +1542,7 @@ document.getElementById("btnReporteExcel").addEventListener("click", async () =>
       filaActual = filaActual + 3 + filasUsadas + 2;
     });
 
-    ws.getCell(filaActual, 1).value = "Celeste = día trabajado (1). Los domingos (naranja) valen 1 cuando se trabajó de lunes a sábado de esa semana. Los días marcados \"No cuenta\" no se incluyen.";
+    ws.getCell(filaActual, 1).value = "Celeste = día trabajado (1). Los domingos (naranja) valen 1 cuando se trabajó de lunes a sábado de esa semana, en las obras cuya forma de pago es 'con dominicales'. Los días marcados \"No cuenta\" no se incluyen.";
     ws.getCell(filaActual, 1).font = { italic: true, size: 9, color: { argb: "FF5B6960" } };
     ws.getColumn(1).width = 4;
     ws.getColumn(2).width = 26;
@@ -2659,11 +2663,22 @@ async function populateCargoSelect(selectedValue) {
   }
 }
 
+let nominaWorkerTocada = false;
+async function sugerirNominaDelCargo() {
+  if (nominaWorkerTocada) return;
+  const cargos = await getAllCargos();
+  document.getElementById("w-nomina").value = nominaPorDefectoDeCargo(document.getElementById("w-cargo").value, cargos);
+}
+document.getElementById("w-cargo").addEventListener("change", sugerirNominaDelCargo);
+document.getElementById("w-nomina").addEventListener("change", () => { nominaWorkerTocada = true; });
+
 async function openNewWorkerModal() {
   editingWorkerId = null;
   workerForm.reset();
+  nominaWorkerTocada = false;
   document.getElementById("workerModalTitle").textContent = "Nuevo trabajador";
   await populateCargoSelect();
+  await sugerirNominaDelCargo();
   workerModal.classList.add("open");
 }
 
@@ -2674,6 +2689,8 @@ async function openEditWorkerModal(id) {
   document.getElementById("workerModalTitle").textContent = "Editar trabajador";
   document.getElementById("w-nombre").value = w.nombre;
   await populateCargoSelect(w.cargo || "");
+  nominaWorkerTocada = true;
+  document.getElementById("w-nomina").value = nominaDeWorker(w, await getAllCargos());
   document.getElementById("w-telefono").value = w.telefono || "";
   document.getElementById("w-valorDia").value = w.valorDia ?? "";
   document.getElementById("w-valorHoraExtra").value = w.valorHoraExtra ?? "";
@@ -2691,6 +2708,7 @@ workerForm.addEventListener("submit", async (e) => {
     obraId: currentObraId,
     nombre: document.getElementById("w-nombre").value.trim(),
     cargo: document.getElementById("w-cargo").value,
+    nomina: document.getElementById("w-nomina").value,
     telefono: document.getElementById("w-telefono").value.trim(),
     valorDia: document.getElementById("w-valorDia").value !== "" ? parseFloat(document.getElementById("w-valorDia").value) : null,
     valorHoraExtra: document.getElementById("w-valorHoraExtra").value !== "" ? parseFloat(document.getElementById("w-valorHoraExtra").value) : null,
@@ -3503,25 +3521,71 @@ function defaultNominaRange() {
   nominaFin = now.toISOString().slice(0, 10);
 }
 
+let nominaGrupo = "mano_obra";
+
 async function renderNominaScreen() {
   if (!nominaInicio) defaultNominaRange();
   document.getElementById("nominaInicioInput").value = nominaInicio;
   document.getElementById("nominaFinInput").value = nominaFin;
+  const modo = await getModoPagoObra();
+  pintarChips("nominaGrupoChips", nominaGrupo);
+  pintarChips("modoPagoChips", modo);
+  document.getElementById("modoPagoNota").textContent = modo === "dominical"
+    ? "Se paga el domingo cuando el trabajador asistió de lunes a sábado esa semana."
+    : "Solo se paga cada día que el trabajador estuvo presente. No se agregan dominicales (un domingo se paga solo si trabajó).";
   await calcularYRenderNomina();
   renderPagosHistorial();
 }
 
+function pintarChips(contenedorId, valor) {
+  document.querySelectorAll(`#${contenedorId} .chip`).forEach((c) => {
+    const on = c.dataset.value === valor;
+    c.classList.toggle("selected", on);
+    c.classList.toggle("sel-presente", on);
+  });
+}
+
+document.querySelectorAll("#nominaGrupoChips .chip").forEach((chip) => {
+  chip.addEventListener("click", () => { nominaGrupo = chip.dataset.value; renderNominaScreen(); });
+});
+document.querySelectorAll("#modoPagoChips .chip").forEach((chip) => {
+  chip.addEventListener("click", async () => {
+    const obras = await getAllObras();
+    const obra = obras.find((o) => o.id === currentObraId);
+    if (!obra) return;
+    obra.modoPago = chip.dataset.value;
+    await saveObra(obra);
+    showToast(obra.modoPago === "dominical" ? "Esta obra paga con dominicales" : "Esta obra paga día trabajado = día pagado");
+    renderNominaScreen();
+  });
+});
+
 async function calcularYRenderNomina() {
-  const [workers, registros] = await Promise.all([getAllWorkers(), getAsistenciaRange(nominaInicio, nominaFin)]);
+  const [todos, cargos, registros, modo] = await Promise.all([
+    getAllWorkers(), getAllCargos(), getAsistenciaRange(addDiasISO(nominaInicio, -7), nominaFin), getModoPagoObra()
+  ]);
+  const workers = todos.filter((w) => nominaDeWorker(w, cargos) === nominaGrupo);
+  const sinNomina = todos.filter((w) => nominaDeWorker(w, cargos) === "ninguna").length;
+  document.getElementById("nominaGrupoNota").textContent =
+    `${NOMINA_GRUPOS[nominaGrupo]}: ${workers.length} trabajador${workers.length === 1 ? "" : "es"}.` +
+    (sinNomina ? ` ${sinNomina} sin nómina (no aparecen aquí).` : "") +
+    ` Se asigna en Asistencia → Gestionar personal → editar trabajador.`;
+
+  const presentes = new Set(registros.filter((r) => r.estado === "presente").map((r) => `${r.workerId}_${r.fecha}`));
 
   const filas = workers.map((w) => {
-    const regs = registros.filter((r) => r.workerId === w.id);
+    const regs = registros.filter((r) => r.workerId === w.id && r.fecha >= nominaInicio && r.fecha <= nominaFin);
     const diasPresente = regs.filter((r) => r.estado === "presente").length;
     const diasAusente = regs.filter((r) => r.estado === "ausente").length;
     const horasExtra = regs.reduce((sum, r) => sum + (r.horasExtra || 0), 0);
-    const pagoBase = diasPresente * (w.valorDia || 0);
+    const esPres = (iso) => presentes.has(`${w.id}_${iso}`);
+    let diasPagados = 0, dominicales = 0;
+    for (let iso = nominaInicio; iso <= nominaFin; iso = addDiasISO(iso, 1)) {
+      if (esDiaPagado(modo, esPres, iso)) { diasPagados++; if (!esPres(iso)) dominicales++; }
+    }
+    const pagoBase = diasPagados * (w.valorDia || 0);
     const pagoExtra = horasExtra * (w.valorHoraExtra || 0);
-    return { workerId: w.id, nombre: w.nombre, cargo: w.cargo || "", diasPresente, diasAusente, horasExtra, valorDia: w.valorDia || 0, valorHoraExtra: w.valorHoraExtra || 0, pagoBase, pagoExtra, total: pagoBase + pagoExtra };
+    return { workerId: w.id, nombre: w.nombre, cargo: w.cargo || "", diasPresente, diasPagados, dominicales, diasAusente, horasExtra, valorDia: w.valorDia || 0, valorHoraExtra: w.valorHoraExtra || 0, pagoBase, pagoExtra, total: pagoBase + pagoExtra };
   });
 
   window._nominaFilas = filas;
@@ -3535,19 +3599,19 @@ async function calcularYRenderNomina() {
 
   const el = document.getElementById("nominaList");
   if (!filas.length) {
-    el.innerHTML = `<div class="empty-state"><div class="big">💵</div><p>Registra trabajadores y su asistencia para calcular la nómina.</p></div>`;
+    el.innerHTML = `<div class="empty-state"><div class="big">💵</div><p>No hay trabajadores en la ${NOMINA_GRUPOS[nominaGrupo].toLowerCase()}.<br>Asígnalos en Asistencia → Gestionar personal → editar trabajador → Nómina.</p></div>`;
     return;
   }
-  if (filas.every((f) => !f.valorDia && !f.valorHoraExtra)) {
-    el.innerHTML = `<div class="low-stock-banner">⚠ Ningún trabajador tiene valor/día definido todavía. Edítalos desde "Gestionar personal" en Asistencia para que la nómina calcule montos.</div>` + el.innerHTML;
-  }
 
-  el.innerHTML = filas.map((f) => `
+  const aviso = filas.every((f) => !f.valorDia && !f.valorHoraExtra)
+    ? `<div class="low-stock-banner">⚠ Ningún trabajador tiene valor/día definido todavía. Edítalos desde "Gestionar personal" en Asistencia para que la nómina calcule montos.</div>` : "";
+
+  el.innerHTML = aviso + filas.map((f) => `
     <div class="entry" data-id="${f.workerId}">
       <div class="entry-head">
         <div>
           <div class="entry-date">${escapeHtml(f.nombre)}</div>
-          <div class="entry-meta">${f.diasPresente} días · ${f.horasExtra}h extra</div>
+          <div class="entry-meta">${f.diasPagados} días${f.dominicales ? ` (incl. ${f.dominicales} dominical${f.dominicales === 1 ? "" : "es"})` : ""} · ${f.horasExtra}h extra</div>
         </div>
         <div style="text-align:right;">
           <div class="item-stock-tag">${formatCOP(f.total)}</div>
@@ -3555,7 +3619,7 @@ async function calcularYRenderNomina() {
         </div>
       </div>
       <div class="entry-body">
-        <div class="entry-block"><div class="k">Días presente</div><div class="v">${f.diasPresente} × ${formatCOP(f.valorDia)} = ${formatCOP(f.pagoBase)}</div></div>
+        <div class="entry-block"><div class="k">Días pagados${f.dominicales ? ` (${f.diasPresente} presente + ${f.dominicales} dominical${f.dominicales === 1 ? "" : "es"})` : ""}</div><div class="v">${f.diasPagados} × ${formatCOP(f.valorDia)} = ${formatCOP(f.pagoBase)}</div></div>
         <div class="entry-block"><div class="k">Horas extra</div><div class="v">${f.horasExtra} × ${formatCOP(f.valorHoraExtra)} = ${formatCOP(f.pagoExtra)}</div></div>
         <div class="entry-block"><div class="k">Días ausente en el periodo</div><div class="v">${f.diasAusente}</div></div>
         <div class="entry-block"><div class="k">Total a pagar</div><div class="v" style="font-weight:600;color:var(--turf-dark);">${formatCOP(f.total)}</div></div>
@@ -3574,13 +3638,15 @@ document.getElementById("btnRegistrarPago").addEventListener("click", async () =
   const filas = window._nominaFilas || [];
   if (!filas.length) return;
   const totalGeneral = filas.reduce((s, f) => s + f.total, 0);
-  if (!confirm(`¿Registrar este pago de nómina por ${formatCOP(totalGeneral)} para el periodo ${formatFechaLarga(nominaInicio)} – ${formatFechaLarga(nominaFin)}? Quedará guardado como historial.`)) return;
+  if (!confirm(`¿Registrar este pago (${NOMINA_GRUPOS[nominaGrupo]}) por ${formatCOP(totalGeneral)} para el periodo ${formatFechaLarga(nominaInicio)} – ${formatFechaLarga(nominaFin)}? Quedará guardado como historial.`)) return;
 
   await savePago({
     obraId: currentObraId,
     fechaInicio: nominaInicio,
     fechaFin: nominaFin,
     fechaRegistro: new Date().toISOString().slice(0, 10),
+    nomina: nominaGrupo,
+    modoPago: await getModoPagoObra(),
     detalle: filas,
     totalGeneral,
   });
@@ -3593,7 +3659,7 @@ document.getElementById("btnImprimirNomina").addEventListener("click", () => {
   const rows = filas.map((f) => `
     <tr>
       <td style="padding:4px 8px;border:1px solid #ccc;">${f.nombre}</td>
-      <td style="padding:4px 8px;border:1px solid #ccc;">${f.diasPresente}</td>
+      <td style="padding:4px 8px;border:1px solid #ccc;">${f.diasPagados != null ? f.diasPagados : f.diasPresente}</td>
       <td style="padding:4px 8px;border:1px solid #ccc;">${f.horasExtra}</td>
       <td style="padding:4px 8px;border:1px solid #ccc;">${formatCOP(f.pagoBase)}</td>
       <td style="padding:4px 8px;border:1px solid #ccc;">${formatCOP(f.pagoExtra)}</td>
@@ -3602,7 +3668,7 @@ document.getElementById("btnImprimirNomina").addEventListener("click", () => {
   const totalGeneral = filas.reduce((s, f) => s + f.total, 0);
 
   document.getElementById("print-area").innerHTML = `
-    <h2 style="font-family:sans-serif;">Nómina — ${formatFechaLarga(nominaInicio)} a ${formatFechaLarga(nominaFin)}</h2>
+    <h2 style="font-family:sans-serif;">${NOMINA_GRUPOS[nominaGrupo]} — ${formatFechaLarga(nominaInicio)} a ${formatFechaLarga(nominaFin)}</h2>
     <table style="border-collapse:collapse;font-family:sans-serif;font-size:0.85rem;width:100%;">
       <thead><tr>
         <th style="padding:4px 8px;border:1px solid #ccc;text-align:left;">Trabajador</th>
@@ -3622,6 +3688,32 @@ document.getElementById("btnImprimirNomina").addEventListener("click", () => {
 // ---------- Nómina: reporte calendario de asistencia (Excel) ----------
 const MESES_MAYUS = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
 const LETRA_DIA_SEMANA = ["D", "L", "M", "M", "J", "V", "S"]; // índice = Date.getDay(), 0=domingo
+
+const NOMINA_GRUPOS = { mano_obra: "Nómina de mano de obra", operadores: "Nómina de operadores", ninguna: "No entra a nómina" };
+
+// Si el trabajador no tiene nómina elegida, se deduce del cargo:
+// profesionales → no entran; operadores → su propia nómina; el resto → mano de obra.
+function nominaPorDefectoDeCargo(cargoNombre, cargos) {
+  const cargo = (cargos || []).find((c) => c.nombre === cargoNombre);
+  if (cargo && cargo.categoria === "profesional") return "ninguna";
+  if ((cargoNombre || "").toLowerCase().includes("operador")) return "operadores";
+  return "mano_obra";
+}
+function nominaDeWorker(w, cargos) { return w.nomina || nominaPorDefectoDeCargo(w.cargo, cargos); }
+
+async function getModoPagoObra() {
+  const o = (await getAllObras()).find((x) => x.id === currentObraId);
+  return (o && o.modoPago) || "dominical";
+}
+
+// ¿Se paga/cuenta este día? Domingo: se paga si trabajó ese domingo, o —solo en modo "dominical"— si trabajó de lunes a sábado.
+function esDiaPagado(modo, esPresente, iso) {
+  if (new Date(iso + "T00:00:00").getDay() !== 0) return esPresente(iso);
+  if (esPresente(iso)) return true;
+  if (modo === "dia_trabajado") return false;
+  for (let i = 1; i <= 6; i++) if (!esPresente(addDiasISO(iso, -i))) return false;
+  return true;
+}
 
 function addDiasISO(iso, n) {
   const d = new Date(iso + "T00:00:00");
@@ -3654,8 +3746,9 @@ document.getElementById("btnReporteCalendarioExcel").addEventListener("click", a
   btn.textContent = "Generando…";
 
   try {
-    const workers = await getAllWorkers();
-    if (!workers.length) { showToast("No tienes personal registrado"); return; }
+    const [todosW, cargosW, modoPago] = await Promise.all([getAllWorkers(), getAllCargos(), getModoPagoObra()]);
+    const workers = todosW.filter((w) => nominaDeWorker(w, cargosW) === nominaGrupo);
+    if (!workers.length) { showToast(`No hay trabajadores en la ${NOMINA_GRUPOS[nominaGrupo].toLowerCase()}`); return; }
 
     // Trae asistencia con una semana extra de colchón antes del inicio, para poder
     // evaluar la regla del domingo aunque el periodo empiece a mitad de semana.
@@ -3665,14 +3758,7 @@ document.getElementById("btnReporteCalendarioExcel").addEventListener("click", a
     registros.forEach((r) => asistMap.set(`${r.workerId}_${r.fecha}`, r.estado));
 
     function trabajoEseDia(workerId, fechaISO) {
-      const dow = new Date(fechaISO + "T00:00:00").getDay();
-      if (dow !== 0) return asistMap.get(`${workerId}_${fechaISO}`) === "presente";
-      // Domingo: cuenta solo si Lunes a Sábado de esa semana están completos.
-      for (let i = 1; i <= 6; i++) {
-        const iso = addDiasISO(fechaISO, -i);
-        if (asistMap.get(`${workerId}_${iso}`) !== "presente") return false;
-      }
-      return true;
+      return esDiaPagado(modoPago, (iso) => asistMap.get(`${workerId}_${iso}`) === "presente", fechaISO);
     }
 
     const bloques = dividirEnBloques(nominaInicio, nominaFin);
@@ -3687,9 +3773,9 @@ document.getElementById("btnReporteCalendarioExcel").addEventListener("click", a
     const totalesGenerales = {}; // workerId -> suma de todos los bloques
 
     // ---- Encabezado general ----
-    ws.getCell("A1").value = `Reporte de asistencia — ${obraNombre}`;
+    ws.getCell("A1").value = `Reporte de asistencia — ${obraNombre} — ${NOMINA_GRUPOS[nominaGrupo]}`;
     ws.getCell("A1").font = { bold: true, size: 13, color: { argb: "FF16324F" } };
-    ws.getCell("A2").value = `Periodo: ${formatFechaLarga(nominaInicio)} — ${formatFechaLarga(nominaFin)}`;
+    ws.getCell("A2").value = `Periodo: ${formatFechaLarga(nominaInicio)} — ${formatFechaLarga(nominaFin)} · Forma de pago: ${modoPago === "dominical" ? "con dominicales" : "día trabajado = día pagado"}`;
     ws.getCell("A2").font = { size: 10, color: { argb: "FF5B6960" } };
     let filaActual = 4;
 
@@ -3800,7 +3886,7 @@ document.getElementById("btnReporteCalendarioExcel").addEventListener("click", a
     const a = document.createElement("a");
     a.href = url;
     const slug = obraNombre.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-    a.download = `calendario-asistencia-${slug}-${nominaInicio}_a_${nominaFin}.xlsx`;
+    a.download = `calendario-asistencia-${slug}-${nominaGrupo === "operadores" ? "operadores-" : ""}${nominaInicio}_a_${nominaFin}.xlsx`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -3816,9 +3902,9 @@ document.getElementById("btnReporteCalendarioExcel").addEventListener("click", a
 });
 
 async function renderPagosHistorial() {
-  const pagos = await getAllPagos();
+  const pagos = (await getAllPagos()).filter((p) => (p.nomina || "mano_obra") === nominaGrupo);
   const el = document.getElementById("pagosHistorialList");
-  if (!pagos.length) { el.innerHTML = `<div class="backup-note">Todavía no has registrado ningún pago de nómina.</div>`; return; }
+  if (!pagos.length) { el.innerHTML = `<div class="backup-note">Todavía no has registrado ningún pago en la ${NOMINA_GRUPOS[nominaGrupo].toLowerCase()}.</div>`; return; }
 
   el.innerHTML = pagos.map((p) => `
     <div class="entry" data-id="${p.id}">

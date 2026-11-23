@@ -235,6 +235,25 @@ service cloud.firestore {
     <h2 class="section-title">Nómina</h2>
 
     <div class="card">
+      <div class="field">
+        <label>Nómina que estás viendo</label>
+        <div class="chip-select" id="nominaGrupoChips">
+          <div class="chip selected sel-presente" data-value="mano_obra">Mano de obra</div>
+          <div class="chip" data-value="operadores">Operadores</div>
+        </div>
+        <p class="backup-note" id="nominaGrupoNota" style="margin-top:6px;"></p>
+      </div>
+      <div class="field">
+        <label>Forma de pago en esta obra</label>
+        <div class="chip-select" id="modoPagoChips">
+          <div class="chip selected sel-presente" data-value="dominical">Con dominicales</div>
+          <div class="chip" data-value="dia_trabajado">Día trabajado = día pagado</div>
+        </div>
+        <p class="backup-note" id="modoPagoNota" style="margin-top:6px;"></p>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="field-row">
         <div class="field">
           <label for="nominaInicioInput">Desde</label>
@@ -731,6 +750,14 @@ service cloud.firestore {
       <div class="field">
         <label for="w-cargo">Cargo</label>
         <select id="w-cargo" required></select>
+      </div>
+      <div class="field">
+        <label for="w-nomina">Nómina</label>
+        <select id="w-nomina">
+          <option value="mano_obra">Nómina de mano de obra (maestros, oficiales, ayudantes…)</option>
+          <option value="operadores">Nómina de operadores</option>
+          <option value="ninguna">No entra a nómina (ingenieros, profesionales…)</option>
+        </select>
       </div>
       <div class="field">
         <label for="w-telefono">Teléfono</label>
