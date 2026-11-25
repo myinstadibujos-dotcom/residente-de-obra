@@ -904,3 +904,9 @@ h2.section-title {
   border: 1.5px solid var(--turf); background: #fff; color: var(--turf-dark);
   border-radius: 16px; padding: 6px 12px; font-size: 0.85rem; cursor: pointer;
 }
+
+/* ---------- Devoluciones ---------- */
+.dev-ok { padding: 9px 12px; font-size: 0.82rem; white-space: nowrap; }
+.dev-plazo { font-size: 0.8rem; color: var(--navy); margin-top: 3px; }
+.dev-plazo.vencida { color: #D00000; font-weight: 700; }
+.dev-card.dev-vencida { border-left: 5px solid #D00000; }

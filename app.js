@@ -17,7 +17,7 @@ let currentObraId = null;
 // ---------- IndexedDB ----------
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("controlObraDB", 15);
+    const req = indexedDB.open("controlObraDB", 16);
     req.onupgradeneeded = (e) => {
       const _db = e.target.result;
       const txn = e.target.transaction;
@@ -97,9 +97,14 @@ function openDB() {
         actInv.createIndex("nombre", "nombre", { unique: false });
       }
 
+      if (!_db.objectStoreNames.contains("devoluciones")) {
+        const dev = _db.createObjectStore("devoluciones", { keyPath: "id", autoIncrement: true });
+        dev.createIndex("fechaLimite", "fechaLimite", { unique: false });
+      }
+
       // Índice obraId en los stores que se filtran por obra activa (se agrega
       // tanto si el store se acaba de crear arriba como si ya existía de antes).
-      ["bitacora", "inv_items", "personal", "maq_equipos", "caja_movs", "pedidos", "nomina_pagos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario", "actividades_inventario"].forEach((storeName) => {
+      ["bitacora", "inv_items", "personal", "maq_equipos", "caja_movs", "pedidos", "nomina_pagos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario", "actividades_inventario", "devoluciones"].forEach((storeName) => {
         if (_db.objectStoreNames.contains(storeName)) {
           const store = txn.objectStore(storeName);
           if (!store.indexNames.contains("obraId")) {
@@ -151,7 +156,7 @@ function setSetting(key, value) {
 }
 
 // ---------- Obras (proyectos) ----------
-const OBRA_SCOPED_STORES = ["bitacora", "inv_items", "personal", "maq_equipos", "caja_movs", "pedidos", "nomina_pagos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario", "actividades_inventario"];
+const OBRA_SCOPED_STORES = ["bitacora", "inv_items", "personal", "maq_equipos", "caja_movs", "pedidos", "nomina_pagos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario", "actividades_inventario", "devoluciones"];
 
 const CATEGORIAS_INVENTARIO_DEFAULT = ["Materiales", "Herramientas", "Equipo menor"];
 const UNIDADES_INVENTARIO_DEFAULT = ["Bultos", "kg", "Ton", "m³", "m²", "m", "Unidades", "Galones", "Litros", "Rollos", "Cajas", "Pares", "Juegos", "Varillas"];
@@ -291,6 +296,10 @@ async function deleteObraCascade(obraId) {
   const unidInv = (await getAllFromStore("unidades_inventario")).filter((r) => r.obraId === obraId);
   const unidInvStore = tx("unidades_inventario", "readwrite");
   unidInv.forEach((u) => unidInvStore.delete(u.id));
+
+  const devs = (await getAllFromStore("devoluciones")).filter((r) => r.obraId === obraId);
+  const devStore = tx("devoluciones", "readwrite");
+  devs.forEach((d) => devStore.delete(d.id));
 
   const actInv = (await getAllFromStore("actividades_inventario")).filter((r) => r.obraId === obraId);
   const actInvStore = tx("actividades_inventario", "readwrite");
@@ -1171,6 +1180,8 @@ function goToScreen(name) {
   if (name === "caja") renderCajaScreen();
   document.getElementById("btnNewPedido").style.display = name === "pedidos" ? "flex" : "none";
   if (name === "pedidos") renderPedidosScreen();
+  document.getElementById("btnNewDevolucion").style.display = name === "devoluciones" ? "flex" : "none";
+  if (name === "devoluciones") renderDevolucionesScreen();
   if (name === "herramientas" && !window._herramientasInit) {
     renderConvCategorias();
     renderConvUnidades();
@@ -1927,6 +1938,260 @@ tareaForm.addEventListener("submit", async (e) => {
   renderTareasScreen();
   renderInicioTareasBanner();
 });
+
+// ---------- Devoluciones (cosas que me prestaron o que debo) ----------
+function hoyLocalISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+// Positivo = faltan días; 0 = hoy; negativo = ya pasó.
+function diasHastaFecha(iso) {
+  return Math.round((new Date(iso + "T00:00:00") - new Date(hoyLocalISO() + "T00:00:00")) / 86400000);
+}
+
+function getAllDevoluciones() {
+  return new Promise((resolve, reject) => {
+    const req = tx("devoluciones", "readonly").index("obraId").getAll(currentObraId);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = (e) => reject(e);
+  });
+}
+function saveDevolucion(d) {
+  return new Promise((resolve, reject) => {
+    const store = tx("devoluciones", "readwrite");
+    const req = d.id ? store.put(d) : store.add(d);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = (e) => reject(e);
+  });
+}
+function deleteDevolucion(id) {
+  return new Promise((resolve, reject) => {
+    const req = tx("devoluciones", "readwrite").delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = (e) => reject(e);
+  });
+}
+
+function plazoDevTexto(d) {
+  if (!d.fechaLimite) return "";
+  const n = diasHastaFecha(d.fechaLimite);
+  if (n < 0) return `⚠ Vencida hace ${-n} día${-n === 1 ? "" : "s"}`;
+  if (n === 0) return "⏰ Hay que devolverla hoy";
+  if (n === 1) return "⏰ Se devuelve mañana";
+  return `Devolver antes del ${formatFechaLarga(d.fechaLimite)} (en ${n} días)`;
+}
+function cantidadDevTexto(d) {
+  return d.cantidad != null && d.cantidad !== "" ? `${redondear2(d.cantidad)} ${d.unidad || ""}`.trim() : "";
+}
+
+function renderDevCard(d, hecho) {
+  const vencida = !hecho && d.fechaLimite && diasHastaFecha(d.fechaLimite) < 0;
+  const cant = cantidadDevTexto(d);
+  const plazo = hecho ? "" : plazoDevTexto(d);
+  const tel = (d.telefono || "").replace(/[^\d+]/g, "");
+  const parciales = (d.parciales || []).map((p) => `${redondear2(p.cantidad)} el ${formatFechaLarga(p.fecha)}`).join(" · ");
+  return `
+  <div class="entry dev-card ${vencida ? "dev-vencida" : ""}" data-id="${d.id}">
+    <div class="entry-head">
+      <div>
+        <div class="entry-date">${escapeHtml(d.objeto)}</div>
+        <div class="entry-meta">${hecho ? "👤 " + escapeHtml(d.persona) + " · " : ""}${cant ? escapeHtml(cant) + " · " : ""}${hecho ? "Devuelto el " + formatFechaLarga(d.fechaDevuelto) : "Prestado el " + formatFechaLarga(d.fechaPrestamo)}</div>
+        ${plazo ? `<div class="dev-plazo ${vencida ? "vencida" : ""}">${plazo}</div>` : ""}
+      </div>
+      <div>${hecho ? `<span class="chip sel-presente" style="pointer-events:none;padding:5px 10px;font-size:0.72rem;">Devuelto</span>` : `<button type="button" class="btn btn-primary dev-ok" data-action="dev-ok" data-id="${d.id}">✔ Devolví</button>`}</div>
+    </div>
+    <div class="entry-body">
+      ${d.persona ? `<div class="entry-block"><div class="k">A quién se le debe</div><div class="v">${escapeHtml(d.persona)}${d.telefono ? " · " + escapeHtml(d.telefono) : ""}</div></div>` : ""}
+      ${d.cantidadInicial != null && !hecho ? `<div class="entry-block"><div class="k">Cantidad que se prestó en total</div><div class="v">${redondear2(d.cantidadInicial)} ${escapeHtml(d.unidad || "")}</div></div>` : ""}
+      ${parciales ? `<div class="entry-block"><div class="k">Ya devuelto</div><div class="v">${parciales}</div></div>` : ""}
+      ${d.nota ? `<div class="entry-block"><div class="k">Nota</div><div class="v">${escapeHtml(d.nota)}</div></div>` : ""}
+      <div class="entry-actions">
+        ${tel ? `<a class="btn btn-secondary" href="tel:${tel}" style="text-decoration:none;">📞 Llamar</a>` : ""}
+        ${hecho ? `<button type="button" class="btn btn-secondary" data-action="dev-reabrir" data-id="${d.id}">↺ Reabrir</button>` : `<button type="button" class="btn btn-secondary" data-action="dev-edit" data-id="${d.id}">Editar</button>`}
+        <button type="button" class="btn btn-danger" data-action="dev-del" data-id="${d.id}">Eliminar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function renderDevolucionesScreen() {
+  const todas = await getAllDevoluciones();
+  const pend = todas.filter((d) => d.estado !== "devuelto");
+  const hechas = todas.filter((d) => d.estado === "devuelto").sort((a, b) => (b.fechaDevuelto || "").localeCompare(a.fechaDevuelto || ""));
+  const venc = pend.filter((d) => d.fechaLimite && diasHastaFecha(d.fechaLimite) < 0).length;
+
+  document.getElementById("devStats").innerHTML = `
+    <div class="stat-row">
+      <div class="stat-box"><div class="num">${pend.length}</div><div class="label">POR DEVOLVER</div></div>
+      <div class="stat-box"><div class="num" style="${venc ? "color:#D00000;" : ""}">${venc}</div><div class="label">VENCIDAS</div></div>
+    </div>`;
+
+  const listEl = document.getElementById("devList");
+  if (!todas.length) {
+    listEl.innerHTML = `<div class="empty-state"><div class="big">🔁</div><p>No tienes nada pendiente por devolver.<br>Toca el botón + cuando te presten algo.</p></div>`;
+    return;
+  }
+
+  // Pendientes agrupados por persona (orden alfabético); dentro de cada persona, primero lo que vence antes.
+  const grupos = {};
+  pend.forEach((d) => {
+    const k = normTxt(d.persona) || "sin-nombre";
+    (grupos[k] = grupos[k] || { nombre: d.persona || "Sin nombre", items: [] }).items.push(d);
+  });
+  const orden = Object.values(grupos).sort(compararNombres);
+  let html = !pend.length ? `<div class="empty-state"><div class="big">✅</div><p>No debes devolver nada. ¡Todo al día!</p></div>` : "";
+  orden.forEach((g) => {
+    g.items.sort((a, b) => (a.fechaLimite || "9999").localeCompare(b.fechaLimite || "9999") || a.objeto.localeCompare(b.objeto, "es"));
+    html += `<div class="asistencia-group-title">👤 ${escapeHtml(g.nombre)} (${g.items.length})</div>` + g.items.map((d) => renderDevCard(d, false)).join("");
+  });
+  if (hechas.length) {
+    html += `<details class="manage-section"><summary>Ya devueltos (${hechas.length})</summary><div style="margin-top:12px;">${hechas.map((d) => renderDevCard(d, true)).join("")}</div></details>`;
+  }
+  listEl.innerHTML = html;
+
+  listEl.querySelectorAll(".entry-head").forEach((hd) => hd.addEventListener("click", () => hd.parentElement.classList.toggle("open")));
+  const on = (sel, fn) => listEl.querySelectorAll(`[data-action='${sel}']`).forEach((b) => b.addEventListener("click", (ev) => { ev.stopPropagation(); fn(parseInt(b.dataset.id, 10)); }));
+  on("dev-ok", marcarDevuelto);
+  on("dev-edit", openEditDevolucionModal);
+  on("dev-reabrir", async (id) => {
+    const d = (await getAllDevoluciones()).find((x) => x.id === id);
+    d.estado = "pendiente"; delete d.fechaDevuelto;
+    await saveDevolucion(d);
+    showToast("Vuelve a estar pendiente");
+    refrescarDevoluciones();
+  });
+  on("dev-del", async (id) => {
+    if (!confirm("¿Eliminar este registro?")) return;
+    await deleteDevolucion(id);
+    showToast("Eliminado");
+    refrescarDevoluciones();
+  });
+}
+
+function refrescarDevoluciones() { renderDevolucionesScreen(); renderInicioDevolucionesBanner(); }
+
+async function marcarDevuelto(id) {
+  const d = (await getAllDevoluciones()).find((x) => x.id === id);
+  if (!d) return;
+  const total = d.cantidad != null && d.cantidad !== "" ? parseFloat(d.cantidad) : null;
+  if (total != null && total > 1) {
+    const r = prompt(`¿Cuántos devolviste?\n(Debes ${redondear2(total)} ${d.unidad || ""} de "${d.objeto}")`, String(redondear2(total)));
+    if (r === null) return;
+    const n = parseFloat(String(r).replace(",", "."));
+    if (!(n > 0)) { showToast("Esa cantidad no es válida"); return; }
+    if (n < total) {
+      if (d.cantidadInicial == null) d.cantidadInicial = total;
+      d.parciales = [...(d.parciales || []), { fecha: hoyLocalISO(), cantidad: n }];
+      d.cantidad = redondear2(total - n);
+      await saveDevolucion(d);
+      showToast(`Quedan ${d.cantidad} ${d.unidad || ""} por devolver`);
+      refrescarDevoluciones();
+      return;
+    }
+  } else if (!confirm(`¿Marcar "${d.objeto}" como devuelto a ${d.persona}?`)) return;
+  d.estado = "devuelto";
+  d.fechaDevuelto = hoyLocalISO();
+  await saveDevolucion(d);
+  showToast("Marcado como devuelto ✔");
+  refrescarDevoluciones();
+}
+
+// ----- modal -----
+const devModal = document.getElementById("devModal");
+const devForm = document.getElementById("devForm");
+let editingDevId = null;
+let devPersonasConocidas = [];
+
+async function cargarPersonasDev() {
+  const todas = await getAllDevoluciones();
+  const vistas = {};
+  [...todas].sort((a, b) => (b.id || 0) - (a.id || 0)).forEach((d) => {
+    const k = normTxt(d.persona);
+    if (!k) return;
+    if (!vistas[k]) vistas[k] = { nombre: d.persona, telefono: d.telefono || "" };
+    else if (!vistas[k].telefono && d.telefono) vistas[k].telefono = d.telefono;
+  });
+  devPersonasConocidas = Object.values(vistas).sort(compararNombres);
+  document.getElementById("dev-personas").innerHTML = devPersonasConocidas.map((p) => `<option value="${escapeHtml(p.nombre)}"></option>`).join("");
+}
+
+async function openNewDevolucionModal() {
+  editingDevId = null;
+  devForm.reset();
+  document.getElementById("devModalTitle").textContent = "Algo que debo devolver";
+  document.getElementById("dev-fechaPrestamo").value = hoyLocalISO();
+  await cargarPersonasDev();
+  devModal.classList.add("open");
+}
+async function openEditDevolucionModal(id) {
+  const d = (await getAllDevoluciones()).find((x) => x.id === id);
+  if (!d) return;
+  editingDevId = id;
+  await cargarPersonasDev();
+  document.getElementById("devModalTitle").textContent = "Editar";
+  document.getElementById("dev-objeto").value = d.objeto || "";
+  document.getElementById("dev-cantidad").value = d.cantidad ?? "";
+  document.getElementById("dev-unidad").value = d.unidad || "";
+  document.getElementById("dev-persona").value = d.persona || "";
+  document.getElementById("dev-telefono").value = d.telefono || "";
+  document.getElementById("dev-fechaPrestamo").value = d.fechaPrestamo || hoyLocalISO();
+  document.getElementById("dev-fechaLimite").value = d.fechaLimite || "";
+  document.getElementById("dev-nota").value = d.nota || "";
+  devModal.classList.add("open");
+}
+function closeDevModal() { devModal.classList.remove("open"); }
+document.getElementById("btnNewDevolucion").addEventListener("click", openNewDevolucionModal);
+document.getElementById("closeDevModal").addEventListener("click", closeDevModal);
+devModal.addEventListener("click", (e) => { if (e.target === devModal) closeDevModal(); });
+
+// Si escribe una persona que ya conocemos, se completa su teléfono.
+document.getElementById("dev-persona").addEventListener("input", (e) => {
+  const p = devPersonasConocidas.find((x) => normTxt(x.nombre) === normTxt(e.target.value));
+  const tel = document.getElementById("dev-telefono");
+  if (p && p.telefono && !tel.value) tel.value = p.telefono;
+});
+
+devForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const objeto = document.getElementById("dev-objeto").value.trim();
+  let persona = document.getElementById("dev-persona").value.trim().replace(/\s+/g, " ");
+  if (!objeto || !persona) { showToast("Falta qué es y a quién se le debe"); return; }
+  // Si la persona ya existe con otra escritura (mayúsculas, tildes), se usa la misma.
+  const igual = buscarSimilares(persona, devPersonasConocidas).find((r) => r.tipo === "igual");
+  if (igual) persona = igual.item.nombre;
+  const cantTxt = document.getElementById("dev-cantidad").value;
+  const previo = editingDevId ? (await getAllDevoluciones()).find((x) => x.id === editingDevId) : null;
+  const d = {
+    ...(previo || { estado: "pendiente" }),
+    obraId: currentObraId,
+    objeto,
+    cantidad: cantTxt !== "" ? parseFloat(cantTxt) : null,
+    unidad: document.getElementById("dev-unidad").value.trim(),
+    persona,
+    telefono: document.getElementById("dev-telefono").value.trim(),
+    fechaPrestamo: document.getElementById("dev-fechaPrestamo").value || hoyLocalISO(),
+    fechaLimite: document.getElementById("dev-fechaLimite").value || null,
+    nota: document.getElementById("dev-nota").value.trim(),
+  };
+  if (editingDevId) d.id = editingDevId;
+  await saveDevolucion(d);
+  closeDevModal();
+  showToast("Guardado");
+  refrescarDevoluciones();
+});
+
+// Aviso en Inicio (de todas las obras).
+async function renderInicioDevolucionesBanner() {
+  const el = document.getElementById("inicioDevolucionesBanner");
+  if (!el) return;
+  const pend = (await getAllFromStore("devoluciones")).filter((d) => d.estado !== "devuelto");
+  if (!pend.length) { el.innerHTML = ""; return; }
+  const venc = pend.filter((d) => d.fechaLimite && diasHastaFecha(d.fechaLimite) < 0).length;
+  el.innerHTML = `<div class="low-stock-banner" style="cursor:pointer;" id="inicioDevolucionesBannerClick">
+    🔁 Debes devolver <b>${pend.length}</b> cosa${pend.length > 1 ? "s" : ""}${venc ? ` (<b>${venc}</b> vencida${venc > 1 ? "s" : ""})` : ""}.
+    <span style="text-decoration:underline;">Ver →</span></div>`;
+  document.getElementById("inicioDevolucionesBannerClick").addEventListener("click", () => goToScreen("devoluciones"));
+}
 
 // ---------- Tareas: banner en Inicio + notificaciones ----------
 async function renderInicioTareasBanner() {
@@ -5058,7 +5323,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 // ---------- Copia de seguridad ----------
-const BACKUP_STORES = ["obras", "bitacora", "inv_items", "inv_movs", "personal", "asistencia", "nomina_pagos", "maq_equipos", "maq_usos", "caja_movs", "pedidos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario", "actividades_inventario"];
+const BACKUP_STORES = ["obras", "bitacora", "inv_items", "inv_movs", "personal", "asistencia", "nomina_pagos", "maq_equipos", "maq_usos", "caja_movs", "pedidos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario", "actividades_inventario", "devoluciones"];
 
 document.getElementById("btnExport").addEventListener("click", async () => {
   const data = { exportado: new Date().toISOString() };
@@ -5400,6 +5665,7 @@ document.getElementById("btnNubeBajar").addEventListener("click", () => nubeConP
   setupAiButton("aiBtnIncidentes", "f-incidentes", "aiUndoIncidentes");
   await renderAiSettings();
   await renderInicioTareasBanner();
+  await renderInicioDevolucionesBanner();
   await renderNotifSettings();
   await setupAlmacenamientoPersistente();
   await renderBackupReminder();

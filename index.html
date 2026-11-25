@@ -30,6 +30,7 @@
   <section class="screen active" id="screen-inicio">
     <div id="inicioBackupBanner"></div>
     <div id="inicioTareasBanner"></div>
+    <div id="inicioDevolucionesBanner"></div>
     <h2 class="section-title">Resumen</h2>
     <div class="stat-row">
       <div class="stat-box">
@@ -320,6 +321,12 @@ service cloud.firestore {
   </section>
 
   <!-- ---------- PEDIDOS ---------- -->
+  <section class="screen" id="screen-devoluciones">
+    <h2 class="section-title">Cosas por devolver</h2>
+    <div id="devStats"></div>
+    <div id="devList"></div>
+  </section>
+
   <section class="screen" id="screen-pedidos">
     <h2 class="section-title">Pedidos de material</h2>
     <div id="pedidosStats"></div>
@@ -462,6 +469,7 @@ service cloud.firestore {
 <button class="btn-fab" id="btnNewEquipo" title="Nuevo equipo" style="display:none;">+</button>
 <button class="btn-fab" id="btnNewCaja" title="Nuevo movimiento" style="display:none;">+</button>
 <button class="btn-fab" id="btnNewPedido" title="Nuevo pedido" style="display:none;">+</button>
+<button class="btn-fab" id="btnNewDevolucion" title="Algo que debo devolver" style="display:none;">+</button>
 <button class="btn-fab" id="btnNewDia" title="Nuevo día trabajado" style="display:none;">+</button>
 <button class="btn-fab" id="btnNewTarea" title="Nueva tarea" style="display:none;">+</button>
 
@@ -489,6 +497,9 @@ service cloud.firestore {
   </button>
   <button class="nav-item" data-screen="pedidos">
     <span class="ico">📦</span><span class="lbl">Pedidos</span>
+  </button>
+  <button class="nav-item" data-screen="devoluciones">
+    <span class="ico">🔁</span><span class="lbl">Devolver</span>
   </button>
   <button class="nav-item" data-screen="dias">
     <span class="ico">📅</span><span class="lbl">Días</span>
@@ -919,6 +930,56 @@ service cloud.firestore {
       </div>
 
       <button type="submit" class="btn btn-primary btn-block">Guardar movimiento</button>
+    </form>
+  </div>
+</div>
+
+<!-- ---------- MODAL: cosas por devolver ---------- -->
+<div class="modal-backdrop" id="devModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3 id="devModalTitle">Algo que debo devolver</h3>
+      <button type="button" class="modal-close" id="closeDevModal">✕</button>
+    </div>
+    <form id="devForm">
+      <div class="field">
+        <label for="dev-objeto">¿Qué es?</label>
+        <input type="text" id="dev-objeto" placeholder="Ej: Tubo PVC 1/2&quot;, disco de corte" required autocomplete="off">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="dev-cantidad">Cantidad</label>
+          <input type="number" id="dev-cantidad" min="0" step="any" placeholder="Opcional" inputmode="decimal">
+        </div>
+        <div class="field">
+          <label for="dev-unidad">Unidad</label>
+          <input type="text" id="dev-unidad" placeholder="Ej: und, m, caja">
+        </div>
+      </div>
+      <div class="field">
+        <label for="dev-persona">¿A quién se le debe?</label>
+        <input type="text" id="dev-persona" list="dev-personas" placeholder="Nombre de la persona o empresa" required autocomplete="off">
+        <datalist id="dev-personas"></datalist>
+      </div>
+      <div class="field">
+        <label for="dev-telefono">Teléfono</label>
+        <input type="tel" id="dev-telefono" placeholder="Opcional (para llamar rápido)" inputmode="tel">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="dev-fechaPrestamo">Me lo prestaron el</label>
+          <input type="date" id="dev-fechaPrestamo" required>
+        </div>
+        <div class="field">
+          <label for="dev-fechaLimite">Devolver antes del</label>
+          <input type="date" id="dev-fechaLimite">
+        </div>
+      </div>
+      <div class="field">
+        <label for="dev-nota">Nota</label>
+        <input type="text" id="dev-nota" placeholder="Opcional">
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Guardar</button>
     </form>
   </div>
 </div>
