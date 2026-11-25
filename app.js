@@ -17,7 +17,7 @@ let currentObraId = null;
 // ---------- IndexedDB ----------
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("controlObraDB", 14);
+    const req = indexedDB.open("controlObraDB", 15);
     req.onupgradeneeded = (e) => {
       const _db = e.target.result;
       const txn = e.target.transaction;
@@ -92,9 +92,14 @@ function openDB() {
         unidInv.createIndex("nombre", "nombre", { unique: false });
       }
 
+      if (!_db.objectStoreNames.contains("actividades_inventario")) {
+        const actInv = _db.createObjectStore("actividades_inventario", { keyPath: "id", autoIncrement: true });
+        actInv.createIndex("nombre", "nombre", { unique: false });
+      }
+
       // Índice obraId en los stores que se filtran por obra activa (se agrega
       // tanto si el store se acaba de crear arriba como si ya existía de antes).
-      ["bitacora", "inv_items", "personal", "maq_equipos", "caja_movs", "pedidos", "nomina_pagos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario"].forEach((storeName) => {
+      ["bitacora", "inv_items", "personal", "maq_equipos", "caja_movs", "pedidos", "nomina_pagos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario", "actividades_inventario"].forEach((storeName) => {
         if (_db.objectStoreNames.contains(storeName)) {
           const store = txn.objectStore(storeName);
           if (!store.indexNames.contains("obraId")) {
@@ -146,7 +151,7 @@ function setSetting(key, value) {
 }
 
 // ---------- Obras (proyectos) ----------
-const OBRA_SCOPED_STORES = ["bitacora", "inv_items", "personal", "maq_equipos", "caja_movs", "pedidos", "nomina_pagos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario"];
+const OBRA_SCOPED_STORES = ["bitacora", "inv_items", "personal", "maq_equipos", "caja_movs", "pedidos", "nomina_pagos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario", "actividades_inventario"];
 
 const CATEGORIAS_INVENTARIO_DEFAULT = ["Materiales", "Herramientas", "Equipo menor"];
 const UNIDADES_INVENTARIO_DEFAULT = ["Bultos", "kg", "Ton", "m³", "m²", "m", "Unidades", "Galones", "Litros", "Rollos", "Cajas", "Pares", "Juegos", "Varillas"];
@@ -286,6 +291,10 @@ async function deleteObraCascade(obraId) {
   const unidInv = (await getAllFromStore("unidades_inventario")).filter((r) => r.obraId === obraId);
   const unidInvStore = tx("unidades_inventario", "readwrite");
   unidInv.forEach((u) => unidInvStore.delete(u.id));
+
+  const actInv = (await getAllFromStore("actividades_inventario")).filter((r) => r.obraId === obraId);
+  const actInvStore = tx("actividades_inventario", "readwrite");
+  actInv.forEach((a) => actInvStore.delete(a.id));
 
   return new Promise((resolve, reject) => {
     const req = tx("obras", "readwrite").delete(obraId);
@@ -640,9 +649,67 @@ function deleteUnidadInventario(id) {
 function getAllItems() {
   return new Promise((resolve, reject) => {
     const req = tx("inv_items", "readonly").index("obraId").getAll(currentObraId);
-    req.onsuccess = () => resolve(req.result.sort((a, b) => a.nombre.localeCompare(b.nombre)));
+    req.onsuccess = () => resolve(req.result.sort(compararNombres));
     req.onerror = (e) => reject(e);
   });
+}
+
+// Orden alfabético en español: ignora mayúsculas y tildes, y "2" va antes que "10".
+function compararNombres(a, b) {
+  return String(a.nombre || "").localeCompare(String(b.nombre || ""), "es", { sensitivity: "base", numeric: true });
+}
+
+// ---------- Texto: normalizar y buscar parecidos ----------
+function normTxt(s) {
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\/\.\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+const PALABRAS_VACIAS = new Set(["de", "del", "la", "el", "los", "las", "para", "con", "en", "y", "x", "a", "un", "una"]);
+function tokensTxt(s) {
+  return normTxt(s).split(" ").filter((t) => t && !PALABRAS_VACIAS.has(t)).map((t) => (t.length > 3 && t.endsWith("s") ? t.slice(0, -1) : t));
+}
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+function tokensCoinciden(t, u) {
+  if (t === u) return true;
+  if (t.length >= 3 && u.length >= 3 && (u.startsWith(t) || t.startsWith(u))) return true; // "cem" → "cemento"
+  const mx = Math.max(t.length, u.length);
+  if (mx >= 5 && levenshtein(t, u) <= (mx >= 8 ? 2 : 1)) return true; // errores de digitación
+  return false;
+}
+// Devuelve [{item, tipo: "igual" | "parecido", score}] ordenado de más a menos parecido.
+// Sirve para cualquier lista de objetos con .nombre (materiales, actividades).
+function buscarSimilares(texto, lista, excluirId) {
+  const tq = tokensTxt(texto);
+  if (!tq.length) return [];
+  const claveQ = [...tq].sort().join(" ");
+  const res = [];
+  for (const item of lista) {
+    if (excluirId != null && item.id === excluirId) continue;
+    const ti = tokensTxt(item.nombre);
+    if (!ti.length) continue;
+    if ([...ti].sort().join(" ") === claveQ) { res.push({ item, tipo: "igual", score: 100 }); continue; }
+    let coinciden = 0;
+    tq.forEach((t) => { if (ti.some((u) => tokensCoinciden(t, u))) coinciden++; });
+    if (!coinciden) continue;
+    const proporcion = coinciden / Math.max(tq.length, ti.length);
+    const cubreTodo = coinciden === tq.length; // todo lo escrito está dentro del nombre existente
+    res.push({ item, tipo: "parecido", score: Math.round(30 + proporcion * 50 + (cubreTodo ? 15 : 0)) });
+  }
+  return res.sort((a, b) => b.score - a.score || compararNombres(a.item, b.item));
 }
 
 function saveItem(item) {
@@ -688,6 +755,51 @@ function addMov(mov) {
     req.onsuccess = () => resolve(req.result);
     req.onerror = (e) => reject(e);
   });
+}
+
+// ---------- Inventario: actividades (para qué se usó el material) ----------
+function getAllActividades() {
+  return new Promise((resolve, reject) => {
+    const req = tx("actividades_inventario", "readonly").index("obraId").getAll(currentObraId);
+    req.onsuccess = () => resolve(req.result.sort(compararNombres));
+    req.onerror = (e) => reject(e);
+  });
+}
+function saveActividad(a) {
+  return new Promise((resolve, reject) => {
+    const store = tx("actividades_inventario", "readwrite");
+    const req = a.id ? store.put(a) : store.add(a);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = (e) => reject(e);
+  });
+}
+function deleteActividad(id) {
+  return new Promise((resolve, reject) => {
+    const req = tx("actividades_inventario", "readwrite").delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = (e) => reject(e);
+  });
+}
+// Devuelve la actividad con ese nombre (si ya existe una igual la reutiliza; si no, la crea).
+async function asegurarActividad(nombreRaw, fecha) {
+  const nombre = String(nombreRaw || "").trim().replace(/\s+/g, " ");
+  if (!nombre) return null;
+  const todas = await getAllActividades();
+  const igual = buscarSimilares(nombre, todas).find((r) => r.tipo === "igual");
+  const a = igual ? igual.item : { obraId: currentObraId, nombre };
+  a.ultimoUso = fecha || new Date().toISOString().slice(0, 10);
+  a.id = await saveActividad(a);
+  return a;
+}
+// Todos los movimientos de la obra actual (de todos sus materiales).
+async function getTodosMovsObra() {
+  const items = await getAllItems();
+  const out = [];
+  for (const it of items) {
+    const movs = await getMovsForItem(it.id);
+    movs.forEach((m) => out.push({ ...m, _item: it }));
+  }
+  return out;
 }
 
 // ---------- Personal (trabajadores) ----------
@@ -2105,15 +2217,30 @@ async function printEntry(id) {
 }
 
 // ---------- Inventario: renderizado ----------
+let invRenderSeq = 0;   // evita que un dibujo viejo pise a uno más nuevo
+let invAbrirId = null;  // material que debe abrirse y mostrarse al terminar de dibujar
+let invSoloId = null;   // si se eligió una sugerencia del buscador, solo se muestra ese
+
+function resaltarTxt(nombre, q) {
+  // Pone en negrita la parte que coincide con lo escrito (sin tildes ni mayúsculas).
+  const n = normTxt(nombre), t = normTxt(q);
+  if (!t || nombre.length !== n.length) return escapeHtml(nombre);
+  const i = n.indexOf(t);
+  if (i < 0) return escapeHtml(nombre);
+  return escapeHtml(nombre.slice(0, i)) + "<b>" + escapeHtml(nombre.slice(i, i + t.length)) + "</b>" + escapeHtml(nombre.slice(i + t.length));
+}
+
 async function renderItemList() {
+  const seq = ++invRenderSeq;
   const items = await getAllItems();
   const listEl = document.getElementById("itemList");
   const bannerEl = document.getElementById("lowStockBanner");
 
-  const lowItems = items.filter((it) => it.minimo != null && it.minimo !== "" && it.stock <= parseFloat(it.minimo));
-  bannerEl.innerHTML = lowItems.length
-    ? `<div class="low-stock-banner">⚠ ${lowItems.length} material${lowItems.length > 1 ? "es" : ""} por debajo del stock mínimo: ${lowItems.map((i) => i.nombre).join(", ")}.</div>`
-    : "";
+  const agotados = items.filter((it) => it.stock <= 0);
+  const lowItems = items.filter((it) => it.stock > 0 && it.minimo != null && it.minimo !== "" && it.stock <= parseFloat(it.minimo));
+  bannerEl.innerHTML =
+    (agotados.length ? `<div class="agotado-banner">🚫 ${agotados.length} material${agotados.length > 1 ? "es" : ""} AGOTADO${agotados.length > 1 ? "S" : ""} (ya no hay): ${agotados.map((i) => escapeHtml(i.nombre)).join(", ")}.</div>` : "") +
+    (lowItems.length ? `<div class="low-stock-banner">⚠ ${lowItems.length} material${lowItems.length > 1 ? "es" : ""} por debajo del stock mínimo: ${lowItems.map((i) => escapeHtml(i.nombre)).join(", ")}.</div>` : "");
 
   if (!items.length) {
     listEl.innerHTML = `
@@ -2122,20 +2249,39 @@ async function renderItemList() {
         <p>Todavía no tienes materiales registrados.<br>Toca el botón + para agregar el primero.</p>
       </div>`;
     renderCategoriaInvManageList();
-  renderUnidadInvManageList();
+    renderUnidadInvManageList();
     return;
   }
 
+  // Buscador: por nombre (tolera tildes, mayúsculas y errores pequeños) o por categoría.
+  const q = (document.getElementById("invBuscar").value || "").trim();
+  let visibles = items;
+  if (invSoloId != null) {
+    visibles = items.filter((it) => it.id === invSoloId);
+  } else if (q) {
+    const ids = new Set(buscarSimilares(q, items).map((r) => r.item.id));
+    const nq = normTxt(q);
+    visibles = items.filter((it) => ids.has(it.id) || normTxt(it.categoria).includes(nq));
+  }
+
   const categorias = await getAllCategoriasInventario();
-  const nombresCategorias = categorias.map((c) => c.nombre);
-  const sinCategoria = items.filter((it) => !it.categoria || !nombresCategorias.includes(it.categoria));
-  const grupos = nombresCategorias.map((nombre) => ({ nombre, items: items.filter((it) => it.categoria === nombre) })).filter((g) => g.items.length);
+  if (seq !== invRenderSeq) return;
+  if (!visibles.length) {
+    listEl.innerHTML = `<div class="empty-state"><div class="big">🔍</div><p>No encontré materiales con "${escapeHtml(q)}".<br>Revisa cómo lo escribiste o toca ✕ para ver todo.</p></div>`;
+    return;
+  }
+
+  const nombresCategorias = categorias.map((c) => c.nombre).sort((x, y) => compararNombres({ nombre: x }, { nombre: y }));
+  const sinCategoria = visibles.filter((it) => !it.categoria || !nombresCategorias.includes(it.categoria));
+  const grupos = nombresCategorias.map((nombre) => ({ nombre, items: visibles.filter((it) => it.categoria === nombre) })).filter((g) => g.items.length);
   if (sinCategoria.length) grupos.push({ nombre: "Sin categoría", items: sinCategoria });
 
+  const abrirTodos = visibles.length === 1;
   const seccionesHtml = await Promise.all(grupos.map(async (g) => {
-    const cardsHtml = await Promise.all(g.items.map(renderItemCard));
+    const cardsHtml = await Promise.all(g.items.map((it) => renderItemCard(it, abrirTodos)));
     return `<div class="asistencia-group-title">${escapeHtml(g.nombre)}</div>${cardsHtml.join("")}`;
   }));
+  if (seq !== invRenderSeq) return;
   listEl.innerHTML = seccionesHtml.join("");
 
   listEl.querySelectorAll(".item-head").forEach((head) => {
@@ -2152,16 +2298,76 @@ async function renderItemList() {
   });
   renderCategoriaInvManageList();
   renderUnidadInvManageList();
+
+  if (invAbrirId != null) {
+    const card = listEl.querySelector(`.item-card[data-id="${invAbrirId}"]`);
+    invAbrirId = null;
+    if (card) { card.classList.add("open"); card.scrollIntoView({ behavior: "smooth", block: "center" }); }
+  }
 }
 
-async function renderItemCard(item) {
-  const isLow = item.minimo != null && item.minimo !== "" && item.stock <= parseFloat(item.minimo);
+// ---------- Inventario: buscador con sugerencias ----------
+const invBuscar = document.getElementById("invBuscar");
+const invSugBox = document.getElementById("invSugerencias");
+let invBuscarTimer = null;
+
+function ocultarSugerenciasBusqueda() { invSugBox.classList.remove("visible"); invSugBox.innerHTML = ""; }
+
+async function pintarSugerenciasBusqueda() {
+  const q = invBuscar.value.trim();
+  if (!q) { ocultarSugerenciasBusqueda(); return; }
+  const items = await getAllItems();
+  if (invBuscar.value.trim() !== q) return; // escribió más mientras tanto
+  const res = buscarSimilares(q, items).slice(0, 6);
+  if (!res.length) {
+    invSugBox.innerHTML = `<div class="sug-titulo">Sin coincidencias para "${escapeHtml(q)}"</div>`;
+    invSugBox.classList.add("visible");
+    return;
+  }
+  invSugBox.innerHTML = res.map((r) => {
+    const it = r.item, agot = it.stock <= 0;
+    return `<div class="sug-row" data-id="${it.id}">
+      <div>${resaltarTxt(it.nombre, q)}<small>${escapeHtml(it.categoria || "Sin categoría")}</small></div>
+      <div class="sug-stock ${agot ? "agotado" : ""}">${agot ? "AGOTADO" : escapeHtml(it.stock + " " + (it.unidad || ""))}</div>
+    </div>`;
+  }).join("");
+  invSugBox.classList.add("visible");
+  invSugBox.querySelectorAll(".sug-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      const id = parseInt(row.dataset.id, 10);
+      const it = res.find((r) => r.item.id === id).item;
+      invBuscar.value = it.nombre;
+      invSoloId = id;
+      invAbrirId = id;
+      ocultarSugerenciasBusqueda();
+      renderItemList();
+    });
+  });
+}
+
+invBuscar.addEventListener("input", () => {
+  invSoloId = null;
+  pintarSugerenciasBusqueda();
+  clearTimeout(invBuscarTimer);
+  invBuscarTimer = setTimeout(renderItemList, 150);
+});
+invBuscar.addEventListener("focus", () => { if (invBuscar.value.trim()) pintarSugerenciasBusqueda(); });
+invBuscar.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ocultarSugerenciasBusqueda(); invBuscar.blur(); } });
+document.getElementById("invBuscarLimpiar").addEventListener("click", () => {
+  invBuscar.value = ""; invSoloId = null; ocultarSugerenciasBusqueda(); renderItemList();
+});
+document.addEventListener("click", (e) => { if (!e.target.closest(".inv-buscador")) ocultarSugerenciasBusqueda(); });
+
+async function renderItemCard(item, abrir) {
+  const agotado = item.stock <= 0;
+  const isLow = !agotado && item.minimo != null && item.minimo !== "" && item.stock <= parseFloat(item.minimo);
   const movs = await getMovsForItem(item.id);
   const movRows = movs.length
     ? movs.slice(0, 15).map((m) => `
         <div class="mov-row">
           <div>
             <span class="mov-type ${m.tipo}">${m.tipo === "entrada" ? "⬇ Entrada" : "⬆ Salida"} · ${m.cantidad} ${item.unidad}</span>
+            ${m.actividad ? `<div class="mov-act">🔧 ${escapeHtml(m.actividad)}</div>` : ""}
             ${m.nota ? `<div class="mov-nota">${escapeHtml(m.nota)}</div>` : ""}
           </div>
           <div class="mov-date">${formatFechaLarga(m.fecha)}</div>
@@ -2169,12 +2375,12 @@ async function renderItemCard(item) {
     : `<div class="mov-nota" style="padding:8px 0;">Sin movimientos registrados todavía.</div>`;
 
   return `
-  <div class="item-card ${isLow ? "low-stock" : ""}" data-id="${item.id}">
+  <div class="item-card ${agotado ? "agotado" : isLow ? "low-stock" : ""}${abrir ? " open" : ""}" data-id="${item.id}">
     <div class="item-head">
       <div>
         <div class="item-name">${escapeHtml(item.nombre)}</div>
         <div class="item-sub">Mínimo: ${item.minimo != null && item.minimo !== "" ? item.minimo + " " + item.unidad : "sin definir"}</div>
-        ${isLow ? `<span class="low-badge">Bajo stock</span>` : ""}
+        ${agotado ? `<span class="agotado-badge">🚫 AGOTADO · ya no hay</span>` : isLow ? `<span class="low-badge">Bajo stock</span>` : ""}
       </div>
       <div style="text-align:right;">
         <div class="item-stock-tag">${item.stock} ${item.unidad}</div>
@@ -2329,8 +2535,38 @@ async function populateUnidadInventarioSelect(selectedValue) {
   }
 }
 
+let editingItemNombreOriginal = "";
+
+// Muestra debajo del texto los materiales que ya existen y se parecen. Devuelve la lista de parecidos.
+async function pintarSugerenciasNombre(texto, box, excluirId, etiqueta, onPick) {
+  const items = await getAllItems();
+  const res = buscarSimilares(texto, items, excluirId).slice(0, 5);
+  if (!texto.trim() || !res.length) { box.classList.remove("visible"); box.innerHTML = ""; return res; }
+  const hayIgual = res.some((r) => r.tipo === "igual");
+  box.innerHTML = `<div class="sug-titulo ${hayIgual ? "alerta" : ""}">${hayIgual ? "⚠ Este material ya existe" : "Ya tienes materiales parecidos"}</div>` +
+    res.map((r) => `<div class="sug-row ${r.tipo === "igual" ? "igual" : ""}" data-id="${r.item.id}">
+      <div>${escapeHtml(r.item.nombre)}<small>${escapeHtml(r.item.categoria || "Sin categoría")} · ${r.item.stock <= 0 ? "AGOTADO" : escapeHtml(r.item.stock + " " + (r.item.unidad || ""))}</small></div>
+      <div class="sug-accion">${etiqueta}</div>
+    </div>`).join("");
+  box.classList.add("visible");
+  box.querySelectorAll(".sug-row").forEach((row) => {
+    row.addEventListener("click", () => onPick(res.find((r) => r.item.id === parseInt(row.dataset.id, 10)).item));
+  });
+  return res;
+}
+
+function irAMaterial(item) {
+  closeItemModal();
+  invBuscar.value = "";
+  invSoloId = null;
+  invAbrirId = item.id;
+  renderItemList();
+}
+
 function openNewItemModal() {
   editingItemId = null;
+  editingItemNombreOriginal = "";
+  document.getElementById("i-sugerencias").classList.remove("visible");
   itemForm.reset();
   document.getElementById("itemModalTitle").textContent = "Nuevo material";
   populateCategoriaInventarioSelect();
@@ -2342,6 +2578,8 @@ async function openEditItemModal(id) {
   const item = await getItem(id);
   if (!item) return;
   editingItemId = id;
+  editingItemNombreOriginal = item.nombre;
+  document.getElementById("i-sugerencias").classList.remove("visible");
   document.getElementById("itemModalTitle").textContent = "Editar material";
   document.getElementById("i-nombre").value = item.nombre;
   await populateCategoriaInventarioSelect(item.categoria || "");
@@ -2356,8 +2594,28 @@ document.getElementById("btnNewItem").addEventListener("click", openNewItemModal
 document.getElementById("closeItemModal").addEventListener("click", closeItemModal);
 itemModal.addEventListener("click", (e) => { if (e.target === itemModal) closeItemModal(); });
 
+document.getElementById("i-nombre").addEventListener("input", (e) => {
+  if (editingItemId && normTxt(e.target.value) === normTxt(editingItemNombreOriginal)) {
+    document.getElementById("i-sugerencias").classList.remove("visible");
+    return;
+  }
+  pintarSugerenciasNombre(e.target.value, document.getElementById("i-sugerencias"), editingItemId, "Ir a este →", irAMaterial);
+});
+
 itemForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+  const nombreNuevo = document.getElementById("i-nombre").value.trim();
+  if (!editingItemId || normTxt(nombreNuevo) !== normTxt(editingItemNombreOriginal)) {
+    const sim = buscarSimilares(nombreNuevo, await getAllItems(), editingItemId);
+    const desc = (r) => `• ${r.item.nombre} (${r.item.stock} ${r.item.unidad || ""})`;
+    const igual = sim.filter((r) => r.tipo === "igual");
+    const parecidos = sim.filter((r) => r.tipo === "parecido" && r.score >= 50).slice(0, 3);
+    if (igual.length) {
+      if (!confirm(`Este material YA EXISTE:\n${igual.map(desc).join("\n")}\n\n¿Seguro que quieres agregar otro con el mismo nombre?`)) return;
+    } else if (parecidos.length) {
+      if (!confirm(`Ya tienes materiales parecidos:\n${parecidos.map(desc).join("\n")}\n\n¿Seguro que quieres agregar "${nombreNuevo}" como material nuevo?`)) return;
+    }
+  }
   const item = {
     obraId: currentObraId,
     nombre: document.getElementById("i-nombre").value.trim(),
@@ -2382,8 +2640,37 @@ function openMovModal(itemId) {
   movForm.reset();
   document.getElementById("m-fecha").value = new Date().toISOString().slice(0, 10);
   document.querySelectorAll("#movTipoChips .chip").forEach((c) => c.classList.toggle("selected", c.dataset.value === "entrada"));
+  actualizarCampoActividadMov();
   movModal.classList.add("open");
 }
+
+// La actividad se pide solo cuando el material SALE (se gasta/usa).
+function actualizarCampoActividadMov() {
+  const tipo = document.querySelector("#movTipoChips .chip.selected")?.dataset.value || "entrada";
+  document.getElementById("m-actividad-field").style.display = tipo === "salida" ? "block" : "none";
+  if (tipo === "salida") pintarSugerenciasActividad();
+}
+
+async function pintarSugerenciasActividad() {
+  const box = document.getElementById("m-actividad-sug");
+  const txt = document.getElementById("m-actividad").value.trim();
+  const todas = await getAllActividades();
+  let lista, titulo;
+  if (!txt) {
+    lista = [...todas].sort((a, b) => (b.ultimoUso || "").localeCompare(a.ultimoUso || "")).slice(0, 8);
+    titulo = lista.length ? "Usadas antes (toca para elegir):" : "Aún no tienes actividades. Escribe la primera y se guardará en tu lista.";
+  } else {
+    const r = buscarSimilares(txt, todas).slice(0, 6);
+    lista = r.map((x) => x.item);
+    titulo = r.some((x) => x.tipo === "igual") ? "✓ Ya está en tu lista" : lista.length ? "¿Es una de estas? (toca para usarla)" : "✚ Actividad nueva: se agregará a tu lista";
+  }
+  box.innerHTML = `<div class="act-sug-titulo">${titulo}</div>` + lista.map((a) => `<button type="button" class="act-chip" data-nombre="${escapeHtml(a.nombre)}">${escapeHtml(a.nombre)}</button>`).join("");
+  box.querySelectorAll(".act-chip").forEach((b) => b.addEventListener("click", () => {
+    document.getElementById("m-actividad").value = b.dataset.nombre;
+    pintarSugerenciasActividad();
+  }));
+}
+document.getElementById("m-actividad").addEventListener("input", pintarSugerenciasActividad);
 function closeMovModal() { movModal.classList.remove("open"); }
 document.getElementById("closeMovModal").addEventListener("click", closeMovModal);
 movModal.addEventListener("click", (e) => { if (e.target === movModal) closeMovModal(); });
@@ -2392,6 +2679,7 @@ document.querySelectorAll("#movTipoChips .chip").forEach((chip) => {
   chip.addEventListener("click", () => {
     document.querySelectorAll("#movTipoChips .chip").forEach((c) => c.classList.remove("selected"));
     chip.classList.add("selected");
+    actualizarCampoActividadMov();
   });
 });
 
@@ -2406,12 +2694,24 @@ movForm.addEventListener("submit", async (e) => {
     if (!confirm(`Esto dejará el stock en negativo (tienes ${item.stock} ${item.unidad}). ¿Continuar de todos modos?`)) return;
   }
 
+  const fechaMov = document.getElementById("m-fecha").value;
+  let act = null;
+  if (tipo === "salida") {
+    const txtAct = document.getElementById("m-actividad").value.trim();
+    if (!txtAct && !confirm("No dijiste para qué actividad es esta salida.\n\n¿Guardarla sin actividad?")) {
+      document.getElementById("m-actividad").focus();
+      return;
+    }
+    if (txtAct) act = await asegurarActividad(txtAct, fechaMov);
+  }
+
   await addMov({
     itemId: movTargetItemId,
     tipo,
     cantidad,
-    fecha: document.getElementById("m-fecha").value,
+    fecha: fechaMov,
     nota: document.getElementById("m-nota").value.trim(),
+    ...(act ? { actividadId: act.id, actividad: act.nombre } : {}),
   });
 
   item.stock = tipo === "entrada" ? item.stock + cantidad : item.stock - cantidad;
@@ -2420,6 +2720,97 @@ movForm.addEventListener("submit", async (e) => {
   closeMovModal();
   showToast("Movimiento guardado");
   renderItemList();
+});
+
+// ---------- Inventario: gestionar actividades ----------
+const actModal = document.getElementById("actModal");
+const redondear2 = (n) => Math.round(n * 100) / 100;
+const limpiarMov = (m) => { const { _item, ...r } = m; return r; };
+
+async function renderActividadesModal() {
+  const [acts, movs] = await Promise.all([getAllActividades(), getTodosMovsObra()]);
+  const lista = document.getElementById("actLista");
+  if (!acts.length) {
+    lista.innerHTML = `<div class="empty-state"><div class="big">📋</div><p>Todavía no tienes actividades.<br>Se crean solas cuando registras una salida de material, o agrégalas abajo.</p></div>`;
+    return;
+  }
+  const por = {};
+  movs.filter((m) => m.tipo === "salida" && m.actividadId).forEach((m) => { (por[m.actividadId] = por[m.actividadId] || []).push(m); });
+  lista.innerHTML = acts.map((a) => {
+    const ms = por[a.id] || [];
+    const tot = {};
+    ms.forEach((m) => {
+      const t = tot[m.itemId] = tot[m.itemId] || { nombre: m._item.nombre, unidad: m._item.unidad || "", cant: 0 };
+      t.cant += m.cantidad;
+    });
+    const filas = Object.values(tot).sort(compararNombres).map((t) =>
+      `<div class="mov-row"><div>${escapeHtml(t.nombre)}</div><div class="mov-type salida">${redondear2(t.cant)} ${escapeHtml(t.unidad)}</div></div>`).join("") ||
+      `<div class="mov-nota" style="padding:6px 0;">Aún no se ha sacado material para esta actividad.</div>`;
+    const nMat = Object.keys(tot).length;
+    return `<div class="item-card" data-id="${a.id}">
+      <div class="item-head">
+        <div><div class="item-name">${escapeHtml(a.nombre)}</div>
+        <div class="item-sub">${ms.length} salida${ms.length === 1 ? "" : "s"} · ${nMat} material${nMat === 1 ? "" : "es"}</div></div>
+        <span class="entry-caret">▾</span>
+      </div>
+      <div class="item-body">
+        <div class="entry-block"><div class="k">Material usado en esta actividad</div>${filas}</div>
+        <div class="entry-actions" style="margin-top:12px;">
+          <button type="button" class="btn btn-secondary" data-act="renombrar" data-id="${a.id}">Renombrar</button>
+          <button type="button" class="btn btn-danger" data-act="eliminar" data-id="${a.id}">Eliminar</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+
+  lista.querySelectorAll(".item-head").forEach((hd) => hd.addEventListener("click", () => hd.parentElement.classList.toggle("open")));
+  lista.querySelectorAll("[data-act='renombrar']").forEach((b) => b.addEventListener("click", () => renombrarActividad(parseInt(b.dataset.id, 10))));
+  lista.querySelectorAll("[data-act='eliminar']").forEach((b) => b.addEventListener("click", async () => {
+    const a = acts.find((x) => x.id === parseInt(b.dataset.id, 10));
+    if (!confirm(`¿Quitar "${a.nombre}" de la lista?\n\nLos movimientos que ya la usaron conservan el nombre.`)) return;
+    await deleteActividad(a.id);
+    renderActividadesModal();
+  }));
+}
+
+async function renombrarActividad(id) {
+  const acts = await getAllActividades();
+  const a = acts.find((x) => x.id === id);
+  if (!a) return;
+  const nuevo = (prompt("Nuevo nombre de la actividad:", a.nombre) || "").trim().replace(/\s+/g, " ");
+  if (!nuevo || nuevo === a.nombre) return;
+  const otra = buscarSimilares(nuevo, acts, id).find((r) => r.tipo === "igual");
+  const movs = (await getTodosMovsObra()).filter((m) => m.actividadId === id);
+  if (otra) {
+    if (!confirm(`Ya existe "${otra.item.nombre}". ¿Unir las dos actividades en una sola?`)) return;
+    for (const m of movs) await putIntoStore("inv_movs", { ...limpiarMov(m), actividadId: otra.item.id, actividad: otra.item.nombre });
+    await deleteActividad(id);
+    showToast("Actividades unidas");
+  } else {
+    a.nombre = nuevo;
+    await saveActividad(a);
+    for (const m of movs) await putIntoStore("inv_movs", { ...limpiarMov(m), actividad: nuevo });
+    showToast("Actividad renombrada");
+  }
+  renderActividadesModal();
+}
+
+function openActModal() { actModal.classList.add("open"); renderActividadesModal(); }
+document.getElementById("btnActividades").addEventListener("click", openActModal);
+document.getElementById("closeActModal").addEventListener("click", () => actModal.classList.remove("open"));
+actModal.addEventListener("click", (e) => { if (e.target === actModal) actModal.classList.remove("open"); });
+document.getElementById("btnActAgregar").addEventListener("click", async () => {
+  const inp = document.getElementById("act-nueva");
+  const nombre = inp.value.trim();
+  if (!nombre) { showToast("Escribe el nombre de la actividad"); return; }
+  const sim = buscarSimilares(nombre, await getAllActividades());
+  if (sim.some((r) => r.tipo === "igual")) { showToast("Esa actividad ya está en la lista"); return; }
+  const par = sim.filter((r) => r.score >= 50).slice(0, 3);
+  if (par.length && !confirm(`Ya tienes actividades parecidas:\n${par.map((r) => "• " + r.item.nombre).join("\n")}\n\n¿Seguro que quieres agregar "${nombre}"?`)) return;
+  await asegurarActividad(nombre);
+  inp.value = "";
+  showToast("Actividad agregada");
+  renderActividadesModal();
 });
 
 // ---------- Asistencia: estado ----------
@@ -4118,10 +4509,11 @@ async function openMatRecModal() {
   const porCat = {};
   items.forEach((it) => { (porCat[it.categoria || "Sin categoría"] = porCat[it.categoria || "Sin categoría"] || []).push(it); });
   sel.innerHTML = `<option value="">— Elige un material del inventario —</option><option value="__nuevo__">➕ Material nuevo (no está en el inventario)</option>` +
-    Object.keys(porCat).sort().map((cat) => `<optgroup label="${escapeHtml(cat)}">${porCat[cat].map((it) => `<option value="${it.id}">${escapeHtml(it.nombre)} (${escapeHtml(it.unidad || "")})</option>`).join("")}</optgroup>`).join("");
+    Object.keys(porCat).sort((x, y) => compararNombres({ nombre: x }, { nombre: y })).map((cat) => `<optgroup label="${escapeHtml(cat)}">${porCat[cat].map((it) => `<option value="${it.id}">${escapeHtml(it.nombre)} (${escapeHtml(it.unidad || "")})</option>`).join("")}</optgroup>`).join("");
   await llenarSelectLista("mr-categoria", await getAllCategoriasInventario());
   await llenarSelectLista("mr-unidad", await getAllUnidadesInventario());
   document.getElementById("mr-nombre").value = "";
+  document.getElementById("mr-sugerencias").classList.remove("visible");
   document.getElementById("mr-cantidad").value = "";
   sel.value = items.length ? "" : "__nuevo__";
   actualizarMatRecModal();
@@ -4140,6 +4532,13 @@ document.getElementById("btnAddMatRec").addEventListener("click", openMatRecModa
 document.getElementById("closeMatRecModal").addEventListener("click", () => matRecModal.classList.remove("open"));
 matRecModal.addEventListener("click", (e) => { if (e.target === matRecModal) matRecModal.classList.remove("open"); });
 document.getElementById("mr-item").addEventListener("change", actualizarMatRecModal);
+document.getElementById("mr-nombre").addEventListener("input", (e) => {
+  pintarSugerenciasNombre(e.target.value, document.getElementById("mr-sugerencias"), null, "Usar este →", (it) => {
+    document.getElementById("mr-item").value = String(it.id);
+    document.getElementById("mr-sugerencias").classList.remove("visible");
+    actualizarMatRecModal();
+  });
+});
 
 document.getElementById("btnMrAgregar").addEventListener("click", async () => {
   const v = document.getElementById("mr-item").value;
@@ -4150,7 +4549,12 @@ document.getElementById("btnMrAgregar").addEventListener("click", async () => {
     const nombre = document.getElementById("mr-nombre").value.trim();
     if (!nombre) { showToast("Escribe el nombre del material"); return; }
     const existentes = await getAllItems();
-    const igual = existentes.find((it) => it.nombre.trim().toLowerCase() === nombre.toLowerCase());
+    const sim = buscarSimilares(nombre, existentes);
+    const igualR = sim.find((r) => r.tipo === "igual");
+    const igual = igualR ? igualR.item : null;
+    const parecidos = sim.filter((r) => r.tipo === "parecido" && r.score >= 50).slice(0, 3);
+    if (!igual && parecidos.length &&
+        !confirm(`Ya tienes materiales parecidos:\n${parecidos.map((r) => `• ${r.item.nombre} (${r.item.stock} ${r.item.unidad || ""})`).join("\n")}\n\n¿Seguro que quieres agregar "${nombre}" como material nuevo?`)) return;
     if (igual) {
       currentMatRec.push({ itemId: igual.id, nombre: igual.nombre, unidad: igual.unidad, categoria: igual.categoria, cantidad });
       showToast(`"${igual.nombre}" ya estaba en tu inventario; se usó ese`);
@@ -4359,77 +4763,144 @@ function pintarDuracion(el, desde, hasta, legacyHoras) {
   }
 }
 
-// ---------- Clima (selección múltiple con horario) ----------
+// ---------- Clima (tramos por hora; un mismo clima puede repetirse) ----------
+const CLIMA_TIPOS = [
+  { v: "Soleado", e: "☀" },
+  { v: "Nublado", e: "☁" },
+  { v: "Lluvia", e: "🌧" },
+  { v: "Lluvia parcial", e: "🌦" },
+];
+
+function crearTramoClima(c) {
+  c = c || {};
+  const row = document.createElement("div");
+  row.className = "clima-tramo";
+  const opts = CLIMA_TIPOS.map((t) => `<option value="${t.v}"${t.v === c.tipo ? " selected" : ""}>${t.e} ${t.v}</option>`).join("");
+  row.innerHTML = `
+    <div class="clima-tramo-top">
+      <select class="clima-tipo" aria-label="Tipo de clima">${opts}</select>
+      <button type="button" class="clima-quitar" aria-label="Quitar tramo">✕</button>
+    </div>
+    <div class="clima-horario visible">
+      <input type="time" class="clima-desde" aria-label="Hora de inicio">
+      <span>a</span>
+      <input type="time" class="clima-hasta" aria-label="Hora final">
+      <span class="duracion-txt clima-duracion"></span>
+    </div>`;
+  if (c.desde) row.querySelector(".clima-desde").value = c.desde;
+  if (c.hasta) row.querySelector(".clima-hasta").value = c.hasta;
+  if (!c.desde && c.horas != null) row.dataset.horasLegacy = c.horas;
+  row.querySelector(".clima-quitar").addEventListener("click", () => { row.remove(); actualizarTotalesClima(); });
+  row.querySelector(".clima-tipo").addEventListener("change", actualizarTotalesClima);
+  row.querySelectorAll("input[type=time]").forEach((inp) => inp.addEventListener("input", () => {
+    delete row.dataset.horasLegacy;
+    actualizarDuracionClima(row);
+    actualizarTotalesClima();
+  }));
+  actualizarDuracionClima(row);
+  return row;
+}
+
 function actualizarDuracionClima(row) {
   pintarDuracion(row.querySelector(".clima-duracion"), row.querySelector(".clima-desde").value, row.querySelector(".clima-hasta").value,
     row.dataset.horasLegacy !== undefined && row.dataset.horasLegacy !== "" ? parseFloat(row.dataset.horasLegacy) : null);
 }
 
 function resetClimaFields() {
-  document.querySelectorAll(".clima-row").forEach((row) => {
-    row.querySelector(".clima-toggle").checked = false;
-    row.querySelector(".clima-horario").classList.remove("visible");
-    row.querySelector(".clima-desde").value = "";
-    row.querySelector(".clima-hasta").value = "";
-    row.querySelector(".clima-duracion").textContent = "";
-    row.querySelector(".clima-duracion").classList.remove("error");
-    delete row.dataset.horasLegacy;
-  });
+  document.getElementById("climaTramos").innerHTML = "";
+  actualizarTotalesClima();
 }
 
-// Acepta el formato nuevo ({tipo, desde, hasta, horas}), el intermedio ({tipo, horas})
+// Acepta el formato actual ({tipo, desde, hasta, horas}), el intermedio ({tipo, horas})
 // y el viejo (string simple), para que las bitácoras anteriores se sigan viendo bien.
 function setClimaFields(clima) {
   resetClimaFields();
   if (!clima) return;
   const lista = Array.isArray(clima) ? clima : [{ tipo: clima, horas: null }];
+  const cont = document.getElementById("climaTramos");
   lista.forEach((c) => {
-    const row = document.querySelector(`.clima-row[data-value="${c.tipo}"]`);
-    if (!row) return;
-    row.querySelector(".clima-toggle").checked = true;
-    row.querySelector(".clima-horario").classList.add("visible");
-    if (c.desde) row.querySelector(".clima-desde").value = c.desde;
-    if (c.hasta) row.querySelector(".clima-hasta").value = c.hasta;
-    if (!c.desde && c.horas != null) row.dataset.horasLegacy = c.horas;
-    actualizarDuracionClima(row);
+    if (!c || !CLIMA_TIPOS.some((t) => t.v === c.tipo)) return;
+    cont.appendChild(crearTramoClima(c));
   });
+  actualizarTotalesClima();
 }
 
 function getClimaFromForm() {
   const lista = [];
-  document.querySelectorAll(".clima-row").forEach((row) => {
-    if (!row.querySelector(".clima-toggle").checked) return;
+  document.querySelectorAll("#climaTramos .clima-tramo").forEach((row) => {
     const desde = row.querySelector(".clima-desde").value || null;
     const hasta = row.querySelector(".clima-hasta").value || null;
     const min = minutosEntre(desde, hasta);
     let horas = null;
     if (min !== null) horas = Math.round((min / 60) * 100) / 100;
     else if (!desde && !hasta && row.dataset.horasLegacy) horas = parseFloat(row.dataset.horasLegacy);
-    lista.push({ tipo: row.dataset.value, desde, hasta, horas });
+    lista.push({ tipo: row.querySelector(".clima-tipo").value, desde, hasta, horas });
   });
+  lista.sort((a, b) => (a.desde || "99:99").localeCompare(b.desde || "99:99"));
   return lista;
 }
 
-// Devuelve el nombre del primer clima con horas mal puestas (o null si todo está bien).
+// Suma las horas de cada clima (aunque aparezca en varios tramos).
+function totalesClima(lista) {
+  const orden = [], por = {};
+  (lista || []).forEach((c) => {
+    if (c.horas == null) return;
+    if (!(c.tipo in por)) { por[c.tipo] = 0; orden.push(c.tipo); }
+    por[c.tipo] += Math.round(c.horas * 60);
+  });
+  return orden.map((tipo) => ({ tipo, min: por[tipo] }));
+}
+
+function actualizarTotalesClima() {
+  const box = document.getElementById("climaTotales");
+  const tot = totalesClima(getClimaFromForm());
+  if (!tot.length) { box.style.display = "none"; box.innerHTML = ""; return; }
+  box.style.display = "block";
+  const emoji = (t) => (CLIMA_TIPOS.find((x) => x.v === t) || { e: "" }).e;
+  box.innerHTML = "<b>Total por clima:</b> " + tot.map((t) => `${emoji(t.tipo)} ${t.tipo}: <b>${formatDuracionMin(t.min)}</b>`).join(" · ");
+}
+
+// Devuelve un mensaje si algún tramo está mal puesto (o null si todo está bien).
 function climaConHorasInvalidas() {
-  for (const row of document.querySelectorAll(".clima-row")) {
-    if (!row.querySelector(".clima-toggle").checked) continue;
+  const filas = [...document.querySelectorAll("#climaTramos .clima-tramo")];
+  const rangos = [];
+  for (const row of filas) {
+    const tipo = row.querySelector(".clima-tipo").value;
     const d = row.querySelector(".clima-desde").value, h = row.querySelector(".clima-hasta").value;
-    if ((d && !h) || (!d && h) || (d && h && minutosEntre(d, h) === null)) return row.dataset.value;
+    if ((d && !h) || (!d && h) || (d && h && minutosEntre(d, h) === null)) return `Revisa las horas del tramo "${tipo}": pon hora de inicio y final, y que la final sea después de la inicial.`;
+    if (!d && !h && !row.dataset.horasLegacy) return `Al tramo "${tipo}" le faltan las horas. Ponle inicio y final, o quítalo con la ✕.`;
+    if (d && h) rangos.push({ tipo, d, h });
+  }
+  rangos.sort((a, b) => a.d.localeCompare(b.d));
+  for (let i = 1; i < rangos.length; i++) {
+    if (rangos[i].d < rangos[i - 1].h) return `Los tramos "${rangos[i - 1].tipo}" (${formatHora12(rangos[i - 1].d)} a ${formatHora12(rangos[i - 1].h)}) y "${rangos[i].tipo}" (${formatHora12(rangos[i].d)} a ${formatHora12(rangos[i].h)}) se cruzan. Ajusta las horas.`;
   }
   return null;
 }
 
-// detallado = false → "Lluvia (2 h 30 min)"; true → "Lluvia: 2:00 p. m. a 4:30 p. m. (2 h 30 min)"
+// detallado = false → "Soleado (6 h), Lluvia (1 h)"; true → un renglón por tramo + total por clima
 function formatClima(clima, detallado) {
   if (!clima) return "Sin clima";
   const lista = Array.isArray(clima) ? clima : [{ tipo: clima, horas: null }];
   if (!lista.length) return "Sin clima";
-  return lista.map((c) => {
+  const tot = totalesClima(lista);
+  if (!detallado) {
+    const tipos = [];
+    lista.forEach((c) => { if (!tipos.includes(c.tipo)) tipos.push(c.tipo); });
+    return tipos.map((t) => {
+      const x = tot.find((y) => y.tipo === t);
+      return t + (x ? ` (${formatDuracionMin(x.min)})` : "");
+    }).join(", ");
+  }
+  const lineas = lista.map((c) => {
     const dur = c.horas != null ? ` (${formatDuracionHoras(c.horas)})` : "";
-    if (detallado && c.desde && c.hasta) return `${c.tipo}: ${formatHora12(c.desde)} a ${formatHora12(c.hasta)}${dur}`;
+    if (c.desde && c.hasta) return `${c.tipo}: ${formatHora12(c.desde)} a ${formatHora12(c.hasta)}${dur}`;
     return c.tipo + dur;
-  }).join(detallado ? "<br>" : ", ");
+  });
+  if (lista.length > 1 && tot.length) {
+    lineas.push("<b>Total:</b> " + tot.map((t) => `${t.tipo} ${formatDuracionMin(t.min)}`).join(" · "));
+  }
+  return lineas.join("<br>");
 }
 
 const DESCANSO_DEFECTO_MIN = 120; // desayuno + almuerzo
@@ -4451,20 +4922,12 @@ function formatHorarioEntry(entry) {
   return `${rango} (${formatDuracionMin(neto)} de trabajo${descanso ? ", descontando " + formatDuracionMin(descanso) + " de descanso" : ""})`;
 }
 
-document.querySelectorAll(".clima-toggle").forEach((chk) => {
-  chk.addEventListener("change", () => {
-    const row = chk.closest(".clima-row");
-    row.querySelector(".clima-horario").classList.toggle("visible", chk.checked);
-    if (!chk.checked) {
-      row.querySelector(".clima-desde").value = "";
-      row.querySelector(".clima-hasta").value = "";
-      delete row.dataset.horasLegacy;
-      actualizarDuracionClima(row);
-    }
-  });
-});
-document.querySelectorAll(".clima-desde, .clima-hasta").forEach((inp) => {
-  inp.addEventListener("input", () => actualizarDuracionClima(inp.closest(".clima-row")));
+document.getElementById("btnAddClima").addEventListener("click", () => {
+  const cont = document.getElementById("climaTramos");
+  const ult = cont.lastElementChild;
+  const row = crearTramoClima({ tipo: ult ? (ult.querySelector(".clima-tipo").value === "Soleado" ? "Lluvia" : "Soleado") : "Soleado", desde: ult ? ult.querySelector(".clima-hasta").value : "" });
+  cont.appendChild(row);
+  actualizarTotalesClima();
 });
 
 // ---------- Horario de trabajo (jornada del día) ----------
@@ -4542,7 +5005,7 @@ form.addEventListener("submit", async (e) => {
   e.preventDefault();
 
   const climaMalo = climaConHorasInvalidas();
-  if (climaMalo) { alert(`Revisa las horas del clima "${climaMalo}": pon hora de inicio y final, y que la final sea después de la inicial.`); return; }
+  if (climaMalo) { alert(climaMalo); return; }
   const hDesde = document.getElementById("f-horario-desde").value || null;
   const hHasta = document.getElementById("f-horario-hasta").value || null;
   if ((hDesde && !hHasta) || (!hDesde && hHasta) || (hDesde && hHasta && minutosEntre(hDesde, hHasta) === null)) {
@@ -4595,7 +5058,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 // ---------- Copia de seguridad ----------
-const BACKUP_STORES = ["obras", "bitacora", "inv_items", "inv_movs", "personal", "asistencia", "nomina_pagos", "maq_equipos", "maq_usos", "caja_movs", "pedidos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario"];
+const BACKUP_STORES = ["obras", "bitacora", "inv_items", "inv_movs", "personal", "asistencia", "nomina_pagos", "maq_equipos", "maq_usos", "caja_movs", "pedidos", "dias_trabajados", "cargos", "tareas", "categorias_inventario", "unidades_inventario", "actividades_inventario"];
 
 document.getElementById("btnExport").addEventListener("click", async () => {
   const data = { exportado: new Date().toISOString() };

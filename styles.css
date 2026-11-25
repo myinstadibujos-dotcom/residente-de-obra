@@ -852,3 +852,55 @@ h2.section-title {
   cursor: pointer;
   padding: 4px 8px;
 }
+
+/* ---------- Clima por tramos ---------- */
+.clima-tramo { border: 1.5px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; background: #fff; }
+.clima-tramo-top { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.clima-tramo-top select { flex: 1; }
+.clima-quitar { background: none; border: 1.5px solid var(--border); border-radius: 6px; width: 40px; height: 40px; font-size: 1rem; color: #B3382C; cursor: pointer; }
+.clima-totales { display: none; background: #EAF3EC; border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; font-size: 0.88rem; }
+
+/* ---------- Inventario: agotado, buscador, sugerencias, actividades ---------- */
+.item-card.agotado { border-left: 6px solid #D00000; background: #FFF4F3; }
+.item-card.agotado .item-name { color: #9B0000; }
+.item-card.agotado .item-stock-tag { color: #D00000; font-weight: 700; }
+.agotado-badge {
+  display: inline-block; margin-top: 4px; padding: 3px 9px; border-radius: 10px;
+  background: #D00000; color: #fff; font-family: var(--font-mono);
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.02em;
+}
+.agotado-banner {
+  background: #D00000; color: #fff; border-radius: var(--radius);
+  padding: 12px 14px; margin-bottom: 10px; font-size: 0.88rem; font-weight: 600;
+}
+.mov-act { font-size: 0.8rem; color: var(--navy); font-weight: 600; margin-top: 1px; }
+
+.inv-buscador { position: relative; margin-bottom: 12px; }
+.inv-buscar-fila { display: flex; gap: 8px; }
+.inv-buscar-fila input { flex: 1; }
+.inv-buscar-x { width: 44px; border: 1.5px solid var(--border); border-radius: 6px; background: #fff; font-size: 1rem; color: var(--ink-soft); cursor: pointer; }
+
+.sugerencias-box {
+  display: none; margin-top: 6px; border: 1.5px solid var(--border);
+  border-radius: 6px; background: #fff; overflow: hidden;
+}
+.sugerencias-box.visible { display: block; }
+.inv-buscador .sugerencias-box { position: absolute; left: 0; right: 52px; z-index: 20; box-shadow: 0 6px 18px rgba(0,0,0,0.15); }
+.sug-titulo { padding: 8px 12px; font-size: 0.78rem; background: #F4F1E8; color: var(--ink-soft); }
+.sug-titulo.alerta { background: #FDE3E0; color: #9B0000; font-weight: 600; }
+.sug-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 10px 12px; border-top: 1px solid var(--border); cursor: pointer; font-size: 0.92rem;
+}
+.sug-row small { display: block; font-size: 0.74rem; color: var(--ink-soft); }
+.sug-row.igual { background: #FFF4F3; }
+.sug-stock { font-family: var(--font-mono); font-size: 0.8rem; white-space: nowrap; color: var(--turf-dark); }
+.sug-stock.agotado { color: #D00000; font-weight: 700; }
+.sug-accion { font-size: 0.74rem; color: var(--turf-dark); white-space: nowrap; font-weight: 600; }
+
+.act-sug { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.act-sug-titulo { flex-basis: 100%; font-size: 0.78rem; color: var(--ink-soft); }
+.act-chip {
+  border: 1.5px solid var(--turf); background: #fff; color: var(--turf-dark);
+  border-radius: 16px; padding: 6px 12px; font-size: 0.85rem; cursor: pointer;
+}

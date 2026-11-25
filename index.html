@@ -156,6 +156,14 @@ service cloud.firestore {
   <section class="screen" id="screen-inventario">
     <h2 class="section-title">Inventario de materiales</h2>
     <div id="lowStockBanner"></div>
+    <div class="inv-buscador">
+      <div class="inv-buscar-fila">
+        <input type="text" id="invBuscar" placeholder="🔍 Buscar material o categoría..." autocomplete="off" enterkeyhint="search">
+        <button type="button" class="inv-buscar-x" id="invBuscarLimpiar" aria-label="Limpiar búsqueda">✕</button>
+      </div>
+      <div class="sugerencias-box" id="invSugerencias"></div>
+    </div>
+    <button type="button" class="btn btn-secondary btn-block" id="btnActividades" style="margin-bottom:14px;">📋 Actividades de obra (qué material se usó en cada una)</button>
     <div id="itemList"></div>
 
     <details class="manage-section">
@@ -535,45 +543,11 @@ service cloud.firestore {
       </div>
 
       <div class="field">
-        <label>Clima (elige los que hubo y de qué hora a qué hora)</label>
-        <div class="clima-list" id="climaList">
-          <div class="clima-row" data-value="Soleado">
-            <label class="clima-check"><input type="checkbox" class="clima-toggle">☀ Soleado</label>
-            <div class="clima-horario">
-              <input type="time" class="clima-desde" aria-label="Hora de inicio">
-              <span>a</span>
-              <input type="time" class="clima-hasta" aria-label="Hora final">
-              <span class="duracion-txt clima-duracion"></span>
-            </div>
-          </div>
-          <div class="clima-row" data-value="Nublado">
-            <label class="clima-check"><input type="checkbox" class="clima-toggle">☁ Nublado</label>
-            <div class="clima-horario">
-              <input type="time" class="clima-desde" aria-label="Hora de inicio">
-              <span>a</span>
-              <input type="time" class="clima-hasta" aria-label="Hora final">
-              <span class="duracion-txt clima-duracion"></span>
-            </div>
-          </div>
-          <div class="clima-row" data-value="Lluvia">
-            <label class="clima-check"><input type="checkbox" class="clima-toggle">🌧 Lluvia</label>
-            <div class="clima-horario">
-              <input type="time" class="clima-desde" aria-label="Hora de inicio">
-              <span>a</span>
-              <input type="time" class="clima-hasta" aria-label="Hora final">
-              <span class="duracion-txt clima-duracion"></span>
-            </div>
-          </div>
-          <div class="clima-row" data-value="Lluvia parcial">
-            <label class="clima-check"><input type="checkbox" class="clima-toggle">🌦 Lluvia parcial</label>
-            <div class="clima-horario">
-              <input type="time" class="clima-desde" aria-label="Hora de inicio">
-              <span>a</span>
-              <input type="time" class="clima-hasta" aria-label="Hora final">
-              <span class="duracion-txt clima-duracion"></span>
-            </div>
-          </div>
-        </div>
+        <label>Clima del día (por tramos de hora)</label>
+        <div id="climaTramos"></div>
+        <div class="clima-totales" id="climaTotales"></div>
+        <button type="button" class="btn btn-secondary btn-block" id="btnAddClima">＋ Agregar clima / tramo de horas</button>
+        <div class="hint" style="font-size:0.78rem;color:var(--text-soft,#5a6a60);margin-top:6px;">Si cambió varias veces (sol, lluvia, sol), agrega un tramo por cada cambio. El total de cada clima se calcula solo.</div>
       </div>
 
       <div class="field">
@@ -637,7 +611,8 @@ service cloud.firestore {
     <form id="itemForm">
       <div class="field">
         <label for="i-nombre">Nombre del material</label>
-        <input type="text" id="i-nombre" placeholder="Ej: Cemento gris" required>
+        <input type="text" id="i-nombre" placeholder="Ej: Cemento gris" required autocomplete="off">
+        <div class="sugerencias-box" id="i-sugerencias"></div>
       </div>
 
       <div class="field">
@@ -680,7 +655,8 @@ service cloud.firestore {
     <div id="mrNuevoBox" style="display:none;">
       <div class="field">
         <label for="mr-nombre">Nombre del material nuevo</label>
-        <input type="text" id="mr-nombre" placeholder="Ej: Cemento gris">
+        <input type="text" id="mr-nombre" placeholder="Ej: Cemento gris" autocomplete="off">
+        <div class="sugerencias-box" id="mr-sugerencias"></div>
       </div>
       <div class="field-row">
         <div class="field"><label for="mr-categoria">Categoría</label><select id="mr-categoria"></select></div>
@@ -693,6 +669,23 @@ service cloud.firestore {
       <input type="number" id="mr-cantidad" min="0" step="any" placeholder="0" inputmode="decimal">
     </div>
     <button type="button" class="btn btn-primary btn-block" id="btnMrAgregar">Agregar a la lista</button>
+  </div>
+</div>
+
+<!-- ---------- MODAL: actividades de inventario ---------- -->
+<div class="modal-backdrop" id="actModal">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <h3>Actividades de obra</h3>
+      <button type="button" class="modal-close" id="closeActModal">✕</button>
+    </div>
+    <p class="backup-note" style="margin-bottom:12px;">Aquí se guarda la lista de actividades para las que sacas material. Toca una para ver cuánto material se ha usado en ella.</p>
+    <div id="actLista"></div>
+    <div class="field" style="margin-top:14px;">
+      <label for="act-nueva">Nueva actividad</label>
+      <input type="text" id="act-nueva" placeholder="Ej: Construcción almacén" autocomplete="off">
+    </div>
+    <button type="button" class="btn btn-primary btn-block" id="btnActAgregar">+ Agregar actividad</button>
   </div>
 </div>
 
@@ -727,6 +720,12 @@ service cloud.firestore {
       <div class="field">
         <label for="m-nota">Nota</label>
         <input type="text" id="m-nota" placeholder="Ej: Entregado por proveedor X / Usado en cimentación">
+      </div>
+
+      <div class="field" id="m-actividad-field" style="display:none;">
+        <label for="m-actividad">¿Para qué actividad? (se guarda en tu lista)</label>
+        <input type="text" id="m-actividad" placeholder="Ej: Acero para pedestales" autocomplete="off">
+        <div id="m-actividad-sug" class="act-sug"></div>
       </div>
 
       <button type="submit" class="btn btn-primary btn-block">Guardar movimiento</button>
